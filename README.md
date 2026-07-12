@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-[![Deploy to GitHub Pages](https://github.com/lwt980916-glitch/voxel-grand-prix/actions/workflows/deploy.yml/badge.svg)](https://github.com/lwt980916-glitch/voxel-grand-prix/actions/workflows/deploy.yml)
+[![Deploy to GitHub Pages](https://github.com/TaoweNlin/voxel-grand-prix/actions/workflows/deploy.yml/badge.svg)](https://github.com/TaoweNlin/voxel-grand-prix/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Three.js](https://img.shields.io/badge/Three.js-r166-049EF4)](https://threejs.org)
 
@@ -12,7 +12,7 @@ sequences, track lengths (< 0.4% error) and elevation profiles match the real
 thing. No 3D-model or audio assets: every car, grandstand and engine note is
 generated from code.
 
-### ▶️ [Play it now](https://lwt980916-glitch.github.io/voxel-grand-prix/)
+### ▶️ [Play it now](https://taowenlin.github.io/voxel-grand-prix/)
 
 | | |
 |---|---|

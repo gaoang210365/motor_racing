@@ -4,11 +4,11 @@
   "description": "Voxel-style F1 racing game with three real circuits (Monaco / Silverstone / Suzuka) rebuilt from real GPS centerline data. Three.js + WebAudio, no assets.",
   "type": "module",
   "license": "MIT",
-  "author": "lwt980916-glitch",
-  "homepage": "https://lwt980916-glitch.github.io/voxel-grand-prix/",
+  "author": "TaoweNlin",
+  "homepage": "https://taowenlin.github.io/voxel-grand-prix/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lwt980916-glitch/voxel-grand-prix.git"
+    "url": "git+https://github.com/TaoweNlin/voxel-grand-prix.git"
   },
   "keywords": ["f1", "racing-game", "voxel", "threejs", "webgl", "game", "monaco", "silverstone", "suzuka"],
   "scripts": {

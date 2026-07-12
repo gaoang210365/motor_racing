@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-[![Deploy to GitHub Pages](https://github.com/lwt980916-glitch/voxel-grand-prix/actions/workflows/deploy.yml/badge.svg)](https://github.com/lwt980916-glitch/voxel-grand-prix/actions/workflows/deploy.yml)
+[![Deploy to GitHub Pages](https://github.com/TaoweNlin/voxel-grand-prix/actions/workflows/deploy.yml/badge.svg)](https://github.com/TaoweNlin/voxel-grand-prix/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Three.js](https://img.shields.io/badge/Three.js-r166-049EF4)](https://threejs.org)
 
@@ -10,7 +10,7 @@
 弯道序列、赛道长度（误差 < 0.4%）与海拔起伏和现实一致。全程零素材：
 每一辆赛车、每一座看台、每一声引擎轰鸣都由代码生成。
 
-### ▶️ [立即游玩](https://lwt980916-glitch.github.io/voxel-grand-prix/)
+### ▶️ [立即游玩](https://taowenlin.github.io/voxel-grand-prix/)
 
 | | |
 |---|---|
