@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOXEL GRAND PRIX · 体素大奖赛</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ===================== MENU ===================== -->
+<div id="menu">
+  <div class="menu-inner">
+    <div class="title-block">
+      <h1 class="title">VOXEL <span>GRAND PRIX</span></h1>
+      <div class="subtitle">体素大奖赛 · 基于真实几何数据复刻的三条传奇 F1 赛道</div>
+    </div>
+    <div id="track-cards"></div>
+    <div class="menu-row">
+      <div class="menu-label">涂 装</div>
+      <div id="livery-row"></div>
+    </div>
+    <div class="controls-help">
+      <span><b>W / ↑</b> 油门</span><span><b>S / ↓</b> 刹车</span><span><b>A D / ← →</b> 转向</span>
+      <span><b>C</b> 切换视角</span><span><b>R</b> 回到赛道</span><span><b>P</b> 演示模式</span>
+      <span><b>M</b> 静音</span><span><b>Esc</b> 暂停</span><span>🎮 支持手柄</span>
+    </div>
+    <button id="btn-start">进入赛道 · LIGHTS OUT</button>
+  </div>
+</div>
+
+<!-- ===================== HUD ===================== -->
+<div id="hud" class="hidden">
+  <div id="hud-topleft">
+    <div id="hud-track-name"></div>
+    <div id="hud-corner"></div>
+  </div>
+
+  <div id="hud-times">
+    <div class="lap-chip">LAP <span id="hud-lap">1</span></div>
+    <div id="hud-time">0:00.000</div>
+    <div class="hud-times-row">
+      <span>上一圈 <b id="hud-last">--:--.---</b></span>
+      <span class="best-col">最快圈 <b id="hud-best">--:--.---</b></span>
+    </div>
+  </div>
+
+  <div id="hud-autopilot" class="hidden">🤖 演示模式</div>
+
+  <div id="hud-dash">
+    <div id="hud-drs" class="drs-off">DRS</div>
+    <div class="dash-main">
+      <div id="hud-gear">1</div>
+      <div class="dash-speed">
+        <div id="hud-speed">0</div>
+        <div class="unit">km/h</div>
+      </div>
+    </div>
+    <div id="hud-rpm"><div id="hud-rpm-fill"></div></div>
+  </div>
+
+  <canvas id="minimap" width="230" height="230"></canvas>
+  <div id="hud-camera-label"></div>
+  <div id="hud-cam-hint">C 视角 · R 重置 · Esc 暂停</div>
+</div>
+
+<!-- ===================== overlays ===================== -->
+<div id="lights" class="hidden">
+  <div class="lights-bar">
+    <div class="light-col"><i></i><i></i></div>
+    <div class="light-col"><i></i><i></i></div>
+    <div class="light-col"><i></i><i></i></div>
+    <div class="light-col"><i></i><i></i></div>
+    <div class="light-col"><i></i><i></i></div>
+  </div>
+</div>
+
+<div id="center-msg" class="hidden"></div>
+<div id="wrongway" class="hidden">⚠ 逆行 WRONG WAY</div>
+
+<div id="pause" class="hidden">
+  <div class="pause-box">
+    <h2>暂 停</h2>
+    <button id="btn-resume">继续比赛</button>
+    <button id="btn-restart">重新开始</button>
+    <button id="btn-menu">返回选择赛道</button>
+  </div>
+</div>
+
+<div id="loading" class="hidden"><div class="spinner"></div>正在铺设赛道…</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

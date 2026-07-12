@@ -1,0 +1,16 @@
+# dependencies / build
+node_modules/
+dist/
+
+# dev artifacts
+tools/out/
+*.log
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local tooling
+.claude/
