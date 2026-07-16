@@ -1,12 +1,17 @@
 // Voxel Grand Prix — bootstrapping, menu, game loop, visual sync.
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { TRACKS, TRACK_ORDER, LIVERIES } from './config.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { TRACKS, TRACK_ORDER } from './config.js';
 import { CIRCUITS } from './data/circuits.js';
 import { Track } from './track.js';
 import { buildEnvironment } from './environment.js';
-import { buildCar } from './carModel.js';
+import { buildSculptedCar, buildCarInstance, clearCarCache } from './carSculpt.js';
+import { TEAMS, TEAM_ORDER, loadSelectedTeam } from './teams.js';
 import { CarPhysics } from './physics.js';
+import { Garage } from './garage.js';
 import { CameraRig, CAMERA_MODES } from './cameras.js';
 import { Input } from './input.js';
 import { GameAudio } from './audio.js';
@@ -24,8 +29,6 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.getElementById('app').appendChild(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 6000);
-const pmrem = new THREE.PMREMGenerator(renderer);
-const roomEnv = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const input = new Input();
 const audio = new GameAudio();
@@ -33,8 +36,28 @@ const hud = new Hud();
 
 let G = null; // current game session
 let selTrack = TRACK_ORDER[0];
-let selLivery = LIVERIES[0].id;
+let selTeam = loadSelectedTeam();
+let selMode = localStorage.getItem('voxelf1-mode') === 'race' ? 'race' : 'time';
 let paused = false;
+const RACE_LOD = 0.022;
+const RACE_LAPS = 3;
+
+const garage = new Garage(
+  renderer,
+  teamId => { selTeam = teamId; refreshTeamChip(); garage.close(); hud.show('menu', true); },
+  () => { garage.close(); hud.show('menu', true); }
+);
+
+function refreshTeamChip() {
+  const t = TEAMS[selTeam];
+  const chip = document.getElementById('selected-team');
+  if (chip) chip.innerHTML = `<i style="background:${t.uiColor}"></i>${t.name} <b>#${t.number}</b>`;
+}
+
+function openGarage() {
+  hud.show('menu', false);
+  garage.open(selTeam);
+}
 
 // ------------------------------------------------------------ menu
 function setupMenu() {
@@ -58,30 +81,36 @@ function setupMenu() {
       cards.querySelectorAll('.track-card').forEach(c => c.classList.toggle('selected', c.dataset.id === id));
     });
   }
-  const lrow = document.getElementById('livery-row');
-  lrow.innerHTML = '';
-  for (const liv of LIVERIES) {
-    const sw = document.createElement('div');
-    sw.className = 'livery' + (liv.id === selLivery ? ' selected' : '');
-    sw.dataset.id = liv.id;
-    sw.innerHTML = `<span class="chip" style="background:#${liv.body.toString(16).padStart(6, '0')}"></span>${liv.name} <b>#${liv.number}</b>`;
-    sw.addEventListener('click', () => {
-      selLivery = liv.id;
-      lrow.querySelectorAll('.livery').forEach(c => c.classList.toggle('selected', c.dataset.id === liv.id));
-    });
-    lrow.appendChild(sw);
-  }
+  refreshTeamChip();
+  const refreshMode = () => {
+    document.querySelectorAll('.mode-chip').forEach(c => c.classList.toggle('on', c.dataset.mode === selMode));
+    const btn = document.getElementById('btn-start');
+    if (btn) btn.textContent = selMode === 'race' ? `发车 · ${RACE_LAPS} 圈正赛` : '进入赛道 · LIGHTS OUT';
+  };
+  document.querySelectorAll('.mode-chip').forEach(c => c.addEventListener('click', () => {
+    selMode = c.dataset.mode === 'race' ? 'race' : 'time';
+    localStorage.setItem('voxelf1-mode', selMode);
+    refreshMode();
+  }));
+  refreshMode();
+  document.getElementById('btn-garage').addEventListener('click', () => {
+    audio.init(); audio.resume();
+    openGarage();
+  });
   document.getElementById('btn-start').addEventListener('click', () => {
     audio.init(); audio.resume();
-    startGame(selTrack, selLivery);
+    startGame(selTrack, selTeam);
   });
   document.getElementById('btn-resume').addEventListener('click', () => setPaused(false));
-  document.getElementById('btn-restart').addEventListener('click', () => { setPaused(false); startGame(selTrack, selLivery); });
+  document.getElementById('btn-restart').addEventListener('click', () => { setPaused(false); startGame(selTrack, selTeam); });
   document.getElementById('btn-menu').addEventListener('click', () => { setPaused(false); toMenu(); });
+  document.getElementById('btn-res-again').addEventListener('click', () => { hud.show('results', false); startGame(selTrack, selTeam); });
+  document.getElementById('btn-res-menu').addEventListener('click', () => { hud.show('results', false); toMenu(); });
 }
 
 function toMenu() {
   if (G) disposeGame();
+  garage.close();
   hud.show('menu', true);
   hud.show('hud', false);
   hud.show('lights', false);
@@ -103,56 +132,131 @@ function disposeGame() {
   G.scene.remove(G.track.group);
   G.particles.dispose(G.scene);
   G.skids.dispose(G.scene);
+  clearCarCache(); // cloned car geometries are disposed with the scene
   G.scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
   G = null;
+  window.__game = null;
 }
 
-function startGame(trackId, liveryId) {
+let starting = false;
+async function startGame(trackId, teamId) {
+  if (starting) return;
+  starting = true;
+  garage.close();
   hud.show('menu', false);
   hud.show('loading', true);
-  setTimeout(() => {
+  try {
+    await new Promise(r => setTimeout(r, 30));
     disposeGame();
-    buildGame(trackId, liveryId);
+    await buildGame(trackId, teamId);
     hud.show('loading', false);
     hud.show('hud', true);
     G.race.start();
-  }, 40);
+  } finally {
+    starting = false;
+  }
 }
 
-function buildGame(trackId, liveryId) {
+async function buildGame(trackId, teamId) {
   const cfg = TRACKS[trackId];
-  const livery = LIVERIES.find(l => l.id === liveryId) || LIVERIES[0];
+  const team = TEAMS[teamId] || TEAMS.redbull;
+  const loadMsg = document.getElementById('loading-msg');
 
   const scene = new THREE.Scene();
-  scene.environment = roomEnv;
-  if ('environmentIntensity' in scene) scene.environmentIntensity = 0.35;
   renderer.toneMappingExposure = cfg.sky.exposure;
 
+  if (loadMsg) loadMsg.textContent = '正在铺设赛道…';
   const track = new Track(cfg);
   scene.add(track.group);
-  const env = buildEnvironment(scene, track, cfg);
+  if (loadMsg) loadMsg.textContent = '正在生成地形与光照…';
+  await new Promise(r => setTimeout(r, 16));
+  const env = buildEnvironment(scene, track, cfg, renderer);
 
-  const car = buildCar(livery);
+  // night races render through a bloom composer so emissives glow
+  let composer = null;
+  if (cfg.sky.type === 'night') {
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.5, 0.68);
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  // ---- cars: player (+ 7 AI in race mode, two per team) ----
+  const car = await buildCarInstance(team, RACE_LOD, (f, label) => {
+    if (loadMsg && label) loadMsg.textContent = label;
+  }, 'race');
   car.group.rotation.order = 'YXZ';
   scene.add(car.group);
-
   const physics = new CarPhysics(track);
-  physics.placeAt(1 - 11 / track.length, track.width * 0.22);
-  physics.locked = true;
+  const playerEntry = {
+    physics, car, team, isPlayer: true, skill: 1, bias: 0,
+    name: `${team.short} #${team.number} · 你`, short: team.short,
+    roll: 0, dive: 0,
+  };
+
+  const entries = [];
+  if (selMode === 'race') {
+    // full 2022 grid: every team fields one car; player takes their team's seat
+    const slots = TEAM_ORDER.filter(id => id !== team.id);
+    const skills = [0.985, 0.978, 0.971, 0.964, 0.957, 0.950, 0.942, 0.934, 0.926];
+    for (let i = 0; i < slots.length; i++) {
+      if (loadMsg) loadMsg.textContent = `打造 AI 赛车 ${i + 1}/${slots.length}…`;
+      await new Promise(r => setTimeout(r, 0));
+      const t = TEAMS[slots[i]];
+      const c = await buildCarInstance(t, RACE_LOD, () => {}, 'race');
+      c.group.rotation.order = 'YXZ';
+      scene.add(c.group);
+      entries.push({
+        physics: new CarPhysics(track), car: c, team: t, isPlayer: false,
+        skill: skills[i], bias: (Math.random() * 2 - 1) * 1.1,
+        name: `${t.short} #${t.number}`, short: t.short,
+        roll: 0, dive: 0,
+      });
+    }
+  }
+  entries.push(playerEntry); // player starts at the back of the grid
+
+  // grid placement (matches the painted slots)
+  entries.forEach((e, i) => {
+    const back = 9 + i * 9;
+    e.physics.placeAt(((-back / track.length) % 1 + 1) % 1, (i % 2 === 0 ? 1 : -1) * track.width * 0.22);
+    e.physics.locked = true;
+  });
 
   const rig = new CameraRig(camera, car, physics, track);
   const particles = new Particles(scene);
   const skids = new SkidMarks(scene);
-  const race = new Race(track, physics, hud, audio);
+  const race = new Race(track, entries, hud, audio, { mode: selMode, laps: RACE_LAPS });
+  race.onPlayerFinish = cls => showResults(cls);
 
   hud.setTrack(cfg, track);
+  hud.setMode(selMode, RACE_LAPS);
   hud.setCameraLabel(CAMERA_MODES[0].label);
 
   G = {
-    scene, track, env, car, physics, rig, particles, skids, race, cfg, livery,
-    accum: 0, smoke: { t: 0 }, roll: 0, dive: 0, lastGear: 1, wallCd: 0,
+    scene, track, env, car, physics, entries, rig, particles, skids, race, cfg, team, composer,
+    accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
   };
   window.__game = G;
+}
+
+function showResults(cls) {
+  const box = document.getElementById('results-rows');
+  if (!box) return;
+  box.innerHTML = '';
+  const playerRow = cls.find(r => r.isPlayer);
+  document.getElementById('results-pos').textContent = `P${playerRow ? playerRow.pos : '-'}`;
+  for (const r of cls) {
+    const div = document.createElement('div');
+    div.className = 'res-row' + (r.isPlayer ? ' me' : '');
+    const gap = r.pos === 1 ? '冠军' : (r.finished && r.gapMs != null ? `+${(r.gapMs / 1000).toFixed(2)}s` : '—');
+    div.innerHTML = `<b>P${r.pos}</b><span class="rn">${r.name}</span><span class="rg">${gap}</span>`;
+    box.appendChild(div);
+  }
+  if (G) G.rig.setMode('tv'); // victory-lap broadcast view behind the overlay
+  hud.show('results', true);
 }
 
 // ------------------------------------------------------------ per-frame visual sync
@@ -160,36 +264,33 @@ const SMOKE_GRAY = new THREE.Color(0xcfd2d6);
 const SPRAY_GREEN = new THREE.Color(0x69a04a);
 const _wpos = new THREE.Vector3(), _f2 = new THREE.Vector3(), _l2 = new THREE.Vector3();
 
-function syncVisuals(dt) {
-  const { car, physics: p, race } = G;
+function syncCarVisual(e, dt) {
+  const car = e.car, p = e.physics;
   car.group.position.copy(p.pos);
   car.group.rotation.y = p.heading;
   car.group.rotation.x = p.groundPitch;
-
-  // suspension-feel roll & dive
   const rollT = THREE.MathUtils.clamp(p.latG * 0.026, -0.06, 0.06);
   const diveT = THREE.MathUtils.clamp(-p.longG * 0.014, -0.03, 0.045);
-  G.roll = THREE.MathUtils.damp(G.roll, rollT, 9, dt);
-  G.dive = THREE.MathUtils.damp(G.dive, diveT, 9, dt);
-  car.tilt.rotation.z = G.roll;
-  car.tilt.rotation.x = G.dive;
-  // kerb vibration
-  if (p.surface === 'kerb') car.tilt.position.y = Math.sin(performance.now() * 0.09) * 0.012;
-  else car.tilt.position.y = 0;
-
+  e.roll = THREE.MathUtils.damp(e.roll, rollT, 9, dt);
+  e.dive = THREE.MathUtils.damp(e.dive, diveT, 9, dt);
+  car.tilt.rotation.z = e.roll;
+  car.tilt.rotation.x = e.dive;
+  car.tilt.position.y = p.surface === 'kerb' ? Math.sin(performance.now() * 0.09) * 0.012 : 0;
   for (const w of car.wheels) {
     if (w.isFront) w.steer.rotation.y = p.steer;
     w.spin.rotation.x += p.wheelSpin * dt;
   }
-  // DRS flap
   const targetRot = p.drsOpen ? -0.72 : 0;
   car.drsPivot.rotation.x = THREE.MathUtils.damp(car.drsPivot.rotation.x, targetRot, 12, dt);
-  // rain light: on under braking / lift
   car.rainLight.visible = p.brake > 0.12 || (p.throttle < 0.05 && p.speed > 30);
+}
 
-  // gear shift audio
+function syncVisuals(dt) {
+  const { physics: p } = G;
+  for (const e of G.entries) syncCarVisual(e, dt);
+
+  // player-only feedback
   if (p.gear !== G.lastGear) { audio.shift(); G.lastGear = p.gear; }
-  // wall hit audio
   G.wallCd -= dt;
   if (p.wallHit > 1.6 && G.wallCd <= 0) { audio.wallHit(p.wallHit); G.wallCd = 0.25; }
 
@@ -253,6 +354,15 @@ function frame() {
 }
 
 function tick(dt, render = true) {
+  // garage showroom has its own scene + camera
+  if (garage.active) {
+    for (const ev of input.takeEvents()) {
+      if (ev === 'pause') { garage.close(); hud.show('menu', true); }
+    }
+    garage.update(dt);
+    return;
+  }
+
   // one-shot events work even in menus
   for (const ev of input.takeEvents()) {
     if (!G) continue;
@@ -262,20 +372,26 @@ function tick(dt, render = true) {
     if (ev === 'mute') { audio.setMuted(!audio.muted); hud.message(audio.muted ? '🔇 已静音' : '🔊 声音开启', 1000); }
     if (ev === 'autopilot') {
       G.race.autopilotActive = !G.race.autopilotActive;
-      hud.message(G.race.autopilotActive ? '🤖 演示模式 · 自动驾驶' : '🎮 手动驾驶', 1400);
+      // demo mode watches from the trackside TV pods
+      const m = G.rig.setMode(G.race.autopilotActive ? 'tv' : 'chase');
+      hud.setCameraLabel(m.label);
+      hud.message(G.race.autopilotActive ? '🤖 演示模式 · 观战视角' : '🎮 手动驾驶', 1400);
     }
   }
 
   if (G && !paused) {
     input.update(dt);
     G.accum = Math.min(G.accum + dt, FIXED * 8);
-    const inp = G.race.autopilotActive
-      ? G.race.autopilot(dt)
-      : { steer: input.steer, throttle: input.throttle, brake: input.brake };
+    const inp = { steer: input.steer, throttle: input.throttle, brake: input.brake };
     while (G.accum >= FIXED) {
-      G.physics.step(FIXED, inp);
+      for (const e of G.entries) {
+        const ein = G.race.inputFor(e, inp);
+        e._lastInput = ein;
+        e.physics.step(FIXED, ein);
+      }
       G.accum -= FIXED;
     }
+    if (G.entries.length > 1) G.race.resolveCollisions();
     G.race.update(dt, inp);
     syncVisuals(dt);
     G.rig.update(dt);
@@ -283,13 +399,18 @@ function tick(dt, render = true) {
     hud.update(G);
   }
 
-  if (G && render) renderer.render(G.scene, camera);
+  if (G && render) {
+    if (G.composer) G.composer.render();
+    else renderer.render(G.scene, camera);
+  }
 }
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (G && G.composer) G.composer.setSize(window.innerWidth, window.innerHeight);
+  garage.resize(window.innerWidth, window.innerHeight);
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && G && !paused) setPaused(true); });
 
@@ -302,9 +423,13 @@ window.__camera = camera;
 window.__startGame = startGame;
 window.__tick = tick;
 window.__setPaused = setPaused;
+window.__garage = garage;
 window.__shot = (name = `shot-${Date.now()}`) => {
-  if (!G) return Promise.resolve('no game');
-  renderer.render(G.scene, camera);
+  const scene = garage.active ? garage.scene : (G && G.scene);
+  const cam = garage.active ? garage.camera : camera;
+  if (!scene) return Promise.resolve('no scene');
+  if (!garage.active && G && G.composer) G.composer.render();
+  else renderer.render(scene, cam);
   const url = renderer.domElement.toDataURL('image/jpeg', 0.85);
   return fetch(`/__shot?name=${name}`, { method: 'POST', body: url }).then(r => r.text());
 };

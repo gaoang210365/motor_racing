@@ -6,6 +6,9 @@ const SRC = [
   { file: 'raw/monaco.geojson', id: 'monaco' },
   { file: 'raw/silverstone.geojson', id: 'silverstone' },
   { file: 'raw/suzuka.geojson', id: 'suzuka' },
+  { file: 'raw/spa.geojson', id: 'spa' },
+  { file: 'raw/monza.geojson', id: 'monza' },
+  { file: 'raw/singapore.geojson', id: 'singapore' },
 ];
 
 function extractLine(geo) {

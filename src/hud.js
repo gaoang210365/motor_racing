@@ -55,7 +55,10 @@ export class Hud {
       camLabel: $('hud-camera-label'), minimap: $('minimap'),
       lights: $('lights'), msg: $('center-msg'), wrongway: $('wrongway'),
       autopilot: $('hud-autopilot'),
+      pos: $('hud-pos'), gaps: $('hud-gaps'), results: $('results'),
     };
+    this.mode = 'time';
+    this.raceLaps = 3;
     this.mapCtx = this.el.minimap.getContext('2d');
     this.mapFn = null;
     this.msgTimer = null;
@@ -70,6 +73,13 @@ export class Hud {
     this.track = track;
     this.cfg = cfg;
     this.redrawMap();
+  }
+
+  setMode(mode, laps) {
+    this.mode = mode;
+    this.raceLaps = laps;
+    this.el.pos.classList.toggle('hidden', mode !== 'race');
+    this.el.gaps.classList.toggle('hidden', mode !== 'race');
   }
 
   redrawMap() {
@@ -95,9 +105,28 @@ export class Hud {
     }
 
     this.el.time.textContent = formatTime(race.currentLapMs);
-    if (this._lastVals.lap !== race.lapCount) { this.el.lap.textContent = race.lapCount; this._lastVals.lap = race.lapCount; }
+    const lapTxt = this.mode === 'race'
+      ? `${Math.min(race.lapCount, this.raceLaps)} / ${this.raceLaps}`
+      : String(race.lapCount);
+    if (this._lastVals.lap !== lapTxt) { this.el.lap.textContent = lapTxt; this._lastVals.lap = lapTxt; }
     if (this._lastVals.last !== race.lastLapMs) { this.el.last.textContent = formatTime(race.lastLapMs); this._lastVals.last = race.lastLapMs; }
     if (this._lastVals.best !== race.bestLapMs) { this.el.best.textContent = formatTime(race.bestLapMs); this._lastVals.best = race.bestLapMs; }
+
+    // race position + gaps around the player
+    if (this.mode === 'race') {
+      const posTxt = `P${race.playerPos}`;
+      if (this._lastVals.pos !== posTxt) {
+        this.el.pos.innerHTML = `${posTxt}<i>/${race.entries.length}</i>`;
+        this._lastVals.pos = posTxt;
+      }
+      const gaps = race.gaps();
+      if (gaps) {
+        const ah = gaps.ahead ? `▲ ${gaps.ahead.e.short} +${gaps.ahead.s.toFixed(1)}s` : '🏆 领跑';
+        const bh = gaps.behind ? `▼ ${gaps.behind.e.short} -${gaps.behind.s.toFixed(1)}s` : '';
+        const t = `${ah}${bh ? ' · ' + bh : ''}`;
+        if (this._lastVals.gaps !== t) { this.el.gaps.textContent = t; this._lastVals.gaps = t; }
+      }
+    }
 
     // corner callout
     const frac = p.info ? p.info.frac : 0;
@@ -121,11 +150,18 @@ export class Hud {
     this.show('wrongway', race.wrongWay);
     this.el.autopilot.classList.toggle('hidden', !race.autopilotActive);
 
-    // minimap
+    // minimap: every car in its team colour, player on top in yellow
     const ctx = this.mapCtx;
     ctx.clearRect(0, 0, this.el.minimap.width, this.el.minimap.height);
     ctx.drawImage(this.mapBase, 0, 0);
     if (this.mapFn) {
+      for (const e of race.entries) {
+        if (e.isPlayer) continue;
+        const [ax, az] = this.mapFn(e.physics.pos.x, e.physics.pos.z);
+        ctx.fillStyle = e.team?.uiColor || '#9aa2b1';
+        ctx.strokeStyle = 'rgba(0,0,0,0.65)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(ax, az, 3.4, 0, 7); ctx.fill(); ctx.stroke();
+      }
       const [cx, cz] = this.mapFn(p.pos.x, p.pos.z);
       ctx.fillStyle = '#ffd21e';
       ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 2;

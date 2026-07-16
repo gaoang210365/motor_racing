@@ -60,6 +60,13 @@ export class CarPhysics {
     this.groundY = 0; this.groundPitch = 0; this.groundRoll = 0;
   }
 
+  // track.query() reuses a shared scratch object — every car keeps its OWN
+  // snapshot so multi-car sessions never read each other's data
+  _snapshotInfo(q) {
+    this.info = Object.assign(this.info && this.info._own ? this.info : { _own: true }, q);
+    return this.info;
+  }
+
   placeAt(frac, latOffset = 0) {
     const t = this.track;
     const s = ((frac % 1) + 1) % 1 * t.length;
@@ -71,7 +78,7 @@ export class CarPhysics {
     this.steer = this.steerTarget = 0;
     this.gear = 1; this.rpm = 0.35;
     this.lastIdx = smp.idx;
-    this.info = this.track.query(this.pos, this.lastIdx);
+    this._snapshotInfo(this.track.query(this.pos, this.lastIdx));
   }
 
   get speed() { return Math.hypot(this.vx, this.vy); }
@@ -81,9 +88,8 @@ export class CarPhysics {
   left(out = new THREE.Vector3()) { return out.set(Math.cos(this.heading), 0, -Math.sin(this.heading)); }
 
   step(dt, input) {
-    const q = this.track.query(this.pos, this.lastIdx);
+    const q = this._snapshotInfo(this.track.query(this.pos, this.lastIdx));
     this.lastIdx = q.idx;
-    this.info = q;
     this.wallHit = 0;
 
     // ---- surface ----

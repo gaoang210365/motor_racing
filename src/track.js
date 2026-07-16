@@ -40,6 +40,7 @@ export class Track {
     const pts3 = raw.map(p => new THREE.Vector3(p[0], 0, p[1]));
     if (cfg.reverse) pts3.reverse();
     const curve = new THREE.CatmullRomCurve3(pts3, true, 'centripetal', 0.5);
+    curve.arcLengthDivisions = 3000; // fine arc-length table => even sample spacing
 
     const approxLen = curve.getLength();
     const N = this.N = Math.round(approxLen / 2.5);
@@ -50,20 +51,30 @@ export class Track {
       const u = (cfg.startFrac + i / N) % 1;
       pos.push(curve.getPointAt(u));
     }
-    // elevation profile keyed by relative frac
+    // elevation profile keyed by relative frac — Catmull-Rom through the
+    // control points (C1-continuous: no sudden gradient kinks), circular
     const elev = cfg.elevation;
-    const elevAt = f => {
-      const ext = [...elev, [1 + elev[0][0], elev[0][1]]];
-      for (let i = 0; i < ext.length - 1; i++) {
-        if (f >= ext[i][0] && f <= ext[i + 1][0]) {
-          const t = (f - ext[i][0]) / (ext[i + 1][0] - ext[i][0] || 1);
-          return ext[i][1] + (ext[i + 1][1] - ext[i][1]) * t;
-        }
-      }
-      return elev[0][1];
+    const M = elev.length;
+    const cp = i => { // wrapped control point [frac, h]
+      const k = ((i % M) + M) % M;
+      const lap = Math.floor(i / M);
+      return [elev[k][0] + lap, elev[k][1]];
     };
-    let ys = pos.map((_, i) => elevAt(i / N));
-    ys = smoothArray(ys, 10, 2);
+    const elevAt = f => {
+      let i = 0;
+      while (i < M && !(f >= cp(i)[0] && f <= cp(i + 1)[0])) i++;
+      if (i >= M) i = M - 1;
+      const p0 = cp(i - 1), p1 = cp(i), p2 = cp(i + 1), p3 = cp(i + 2);
+      const t = (f - p1[0]) / (p2[0] - p1[0] || 1);
+      // finite-difference tangents scaled to the segment
+      const m1 = ((p2[1] - p0[1]) / (p2[0] - p0[0] || 1)) * (p2[0] - p1[0]);
+      const m2 = ((p3[1] - p1[1]) / (p3[0] - p1[0] || 1)) * (p2[0] - p1[0]);
+      const t2 = t * t, t3 = t2 * t;
+      return (2 * t3 - 3 * t2 + 1) * p1[1] + (t3 - 2 * t2 + t) * m1
+           + (-2 * t3 + 3 * t2) * p2[1] + (t3 - t2) * m2;
+    };
+    let ys = pos.map((_, i) => elevAt(cfg.elevation[0][0] + i / N));
+    ys = smoothArray(ys, 8, 2);
     pos.forEach((p, i) => { p.y = ys[i]; });
 
     // ---- arc length, tangents, normals, curvature ----
@@ -111,8 +122,8 @@ export class Track {
     const minOther = new Array(N).fill(Infinity);
     for (let i = 0; i < N; i += 2) {
       const a = samples[i];
-      for (let j = i + 60; j < N; j += 2) {
-        if ((N - (j - i)) < 60) continue;
+      for (let j = i + 28; j < N; j += 2) {
+        if ((N - (j - i)) < 28) continue;
         const b = samples[j];
         const dx = a.p.x - b.p.x, dz = a.p.z - b.p.z;
         const d2 = dx * dx + dz * dz;
@@ -129,6 +140,7 @@ export class Track {
         if (dy < 3.5 && d < base * 2 + this.width) {
           const room = Math.max(1.4, (d - this.width) / 2 - 0.6);
           for (const smp of [a, b]) { smp.wallL = Math.min(smp.wallL, room); smp.wallR = Math.min(smp.wallR, room); }
+          a.neighborH = b.p.y; b.neighborH = a.p.y; // for mid-gap ground blending
         }
       }
     }
@@ -171,14 +183,16 @@ export class Track {
       this.grid.get(k).push(i);
     });
 
-    // ---- racing speed profile ----
+    // ---- racing speed profile (centerline, used as fallback) ----
     this.computeProfile();
+
+    // ---- proper racing line: taut string through the track corridor ----
+    this.computeRacingLine();
 
     // ---- geometry ----
     this.buildRoad();
     this.buildKerbs();
     this.buildWalls();
-    this.buildAprons();
     this.buildStartLine();
 
     // minimap polyline
@@ -216,6 +230,117 @@ export class Track {
       }
     }
     samples.forEach((sm, i) => { sm.vT = v[i]; });
+  }
+
+  // ---------- racing line ----------
+  // Minimum-curvature racing line via K1999-style curvature equalisation
+  // (Rémi Coulom's TORCS champion): each point is nudged laterally so the
+  // curvature of the circle through its neighbours matches the average of
+  // the neighbouring curvatures. Iterated coarse-to-fine this converges to
+  // the classic out-in-out line — wide entry, apex clip, wide exit — which
+  // genuinely maximises corner radius (a taut "shortest path" string does
+  // the opposite: it hugs the inside and tightens the radius).
+  computeRacingLine() {
+    const { samples, N } = this;
+    const off = new Float64Array(N);
+    const lim = new Float32Array(N);
+    const px = new Float64Array(N), pz = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const sm = samples[i];
+      lim[i] = Math.max(0.6, Math.min(this.width / 2 - 1.35, sm.wallL - 1.2, sm.wallR - 1.2));
+      px[i] = sm.p.x; pz[i] = sm.p.z;
+    }
+    // signed curvature of the circle through three line points
+    const rinv = (a, b, c) => {
+      const x1 = px[b] - px[a], z1 = pz[b] - pz[a];
+      const x2 = px[c] - px[a], z2 = pz[c] - pz[a];
+      const x3 = px[c] - px[b], z3 = pz[c] - pz[b];
+      const d = Math.sqrt((x1 * x1 + z1 * z1) * (x2 * x2 + z2 * z2) * (x3 * x3 + z3 * z3));
+      return d > 1e-9 ? 2 * (x1 * z2 - z1 * x2) / d : 0;
+    };
+    for (let step = 32; step >= 1; step >>= 1) {
+      const passes = step > 1 ? 22 : 70;
+      for (let pass = 0; pass < passes; pass++) {
+        for (let i = 0; i < N; i++) {
+          const ip = (i - step + N) % N, inx = (i + step) % N;
+          const ipp = (i - 2 * step + N) % N, inn = (i + 2 * step) % N;
+          const kT = (rinv(ipp, ip, i) + rinv(i, inx, inn)) * 0.5;
+          // det is linear in the lateral offset: solve for the offset whose
+          // circle matches kT, damp, clamp to the corridor
+          const b = samples[i];
+          const x1 = px[i] - px[ip], z1 = pz[i] - pz[ip];
+          const x2 = px[inx] - px[ip], z2 = pz[inx] - pz[ip];
+          const x3 = px[inx] - px[i], z3 = pz[inx] - pz[i];
+          const d = Math.sqrt((x1 * x1 + z1 * z1) * (x2 * x2 + z2 * z2) * (x3 * x3 + z3 * z3));
+          if (d < 1e-9) continue;
+          const det = x1 * z2 - z1 * x2;
+          const slope = b.n.x * z2 - b.n.z * x2; // d(det)/d(off)
+          if (Math.abs(slope) < 1e-6) continue;
+          const dOff = (kT * d / 2 - det) / slope;
+          const next = THREE.MathUtils.clamp(off[i] + dOff * 0.55, -lim[i], lim[i]);
+          const delta = next - off[i];
+          off[i] = next;
+          px[i] += b.n.x * delta; pz[i] += b.n.z * delta;
+        }
+      }
+    }
+    // smooth the offsets slightly (kills sawtooth from clamping)
+    const sm2 = smoothArray(Array.from(off), 2, 1);
+    const line = this.line = [];
+    for (let i = 0; i < N; i++) {
+      const sm = samples[i];
+      line.push({
+        off: sm2[i],
+        x: sm.p.x + sm.n.x * sm2[i],
+        z: sm.p.z + sm.n.z * sm2[i],
+        y: sm.p.y,
+        kappa: 0, vT: 0,
+      });
+    }
+    // curvature of the line itself
+    let kap = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const a = line[(i - 1 + N) % N], b = line[i], c = line[(i + 1) % N];
+      const v1x = b.x - a.x, v1z = b.z - a.z;
+      const v2x = c.x - b.x, v2z = c.z - b.z;
+      const l1 = Math.hypot(v1x, v1z) || 1, l2 = Math.hypot(v2x, v2z) || 1;
+      const cross = (v1x * v2z - v1z * v2x) / (l1 * l2);
+      kap[i] = Math.asin(THREE.MathUtils.clamp(cross, -1, 1)) / ((l1 + l2) / 2) * -1;
+    }
+    kap = smoothArray(kap, 3, 2);
+    // speed profile on the line (a touch more grip: the line uses the kerbs)
+    const mu = 1.78, m = 798, kDF = 3.15, g = 9.81, vCap = 95;
+    const v = new Array(N);
+    for (let i = 0; i < N; i++) {
+      line[i].kappa = kap[i];
+      const k = Math.abs(kap[i]);
+      const denom = k - (mu * kDF / m) * 0.92;
+      v[i] = denom > 1e-5 ? Math.sqrt(mu * g * 0.92 / denom) : vCap;
+      v[i] = Math.min(v[i], vCap);
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = N - 1; i >= 0; i--) {
+        const j = (i + 1) % N;
+        const ds = Math.hypot(line[j].x - line[i].x, line[j].z - line[i].z);
+        const aBrake = mu * (g + kDF * v[j] * v[j] / m) * 0.82;
+        v[i] = Math.min(v[i], Math.sqrt(v[j] * v[j] + 2 * aBrake * ds));
+      }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        const ds = Math.hypot(line[j].x - line[i].x, line[j].z - line[i].z);
+        const aAcc = Math.min(735000 / Math.max(v[i], 8) / m, 13);
+        v[j] = Math.min(v[j], Math.sqrt(v[i] * v[i] + 2 * aAcc * ds));
+      }
+    }
+    for (let i = 0; i < N; i++) line[i].vT = v[i];
+  }
+
+  // line data at arc length s (shares the samples' s indexing)
+  lineAt(s) {
+    const sm = this.sampleAt(s);
+    return this.line[sm.idx];
   }
 
   // ---------- geometry builders ----------
@@ -346,39 +471,6 @@ export class Track {
         rows.push(row); colors.push(colRow);
       }
       this.addMesh(this.ribbonGeometry(rows, colors), { doubleSide: true, castShadow: true, roughness: 0.7 });
-    }
-  }
-
-  buildAprons() {
-    const { samples, cfg } = this;
-    const street = cfg.walls === 'street';
-    const w2 = this.width / 2;
-    const grass1 = new THREE.Color(0x4d8a3d), grass2 = new THREE.Color(0x447c36);
-    const gravel = new THREE.Color(0xc9b184);
-    const conc1 = new THREE.Color(0x9b9da1), conc2 = new THREE.Color(0x8b8d92);
-    const baseY = Math.min(...samples.map(s => s.p.y)) - 1.2;
-    for (const side of [1, -1]) {
-      const rows = [], colors = [];
-      for (const sm of samples) {
-        const wall = side > 0 ? sm.wallL : sm.wallR;
-        const skip = this.skipApron[sm.idx];
-        const runoffCol = street
-          ? (sm.idx % 2 ? conc1 : conc2)
-          : (Math.abs(sm.kappa) > 0.010 && Math.sign(sm.kappa) !== Math.sign(side) ? gravel : (sm.idx % 2 ? grass1 : grass2));
-        const outerCol = street ? conc2.clone().multiplyScalar(0.9) : (sm.idx % 2 ? grass2 : grass1);
-        const apron = skip ? 0.01 : sm.apronW;
-        const p0 = sm.p.clone().addScaledVector(sm.n, side * w2);
-        const p1 = sm.p.clone().addScaledVector(sm.n, side * wall);
-        const p2 = sm.p.clone().addScaledVector(sm.n, side * (wall + apron * 0.45));
-        const p3 = sm.p.clone().addScaledVector(sm.n, side * (wall + apron));
-        p0.y -= 0.02; p1.y -= 0.02;
-        p2.y = THREE.MathUtils.lerp(sm.p.y, Math.max(baseY, sm.p.y - 3), 0.5);
-        p3.y = skip ? sm.p.y - 0.02 : Math.max(baseY, sm.p.y - 6) - 0.5;
-        rows.push([p0, p1, p2, p3]);
-        const jit = 0.93 + ((sm.idx * 2654435761) % 17) / 17 * 0.14;
-        colors.push([runoffCol.clone().multiplyScalar(jit), runoffCol.clone().multiplyScalar(jit * 0.97), outerCol.clone().multiplyScalar(jit), outerCol.clone().multiplyScalar(jit * 0.95)]);
-      }
-      this.addMesh(this.ribbonGeometry(rows, colors), { roughness: 1 });
     }
   }
 

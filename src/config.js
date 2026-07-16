@@ -1,33 +1,7 @@
-// Global game configuration: liveries + per-track data.
+// Global game configuration: per-track data.
 // All track fractions ("f") are RELATIVE TO THE START/FINISH LINE (0 = S/F),
 // calibrated against the real circuit geometry in src/data/circuits.js.
-
-export const LIVERIES = [
-  {
-    id: 'rosso', name: '烈焰红', number: 1,
-    body: 0xd8000c, secondary: 0x16161a, accent: 0xffffff, accent2: 0xffd21e,
-    wing: 0xd8000c, fin: 0xd8000c, halo: 0x1b1b1f, rim: 0xf2c200,
-    helmet: 0xffd21e, helmetStripe: 0xd8000c,
-  },
-  {
-    id: 'papaya', name: '木瓜橙', number: 4,
-    body: 0xff7b08, secondary: 0x10151e, accent: 0x47c7fc, accent2: 0xffffff,
-    wing: 0xff7b08, fin: 0x47c7fc, halo: 0x14181f, rim: 0x111111,
-    helmet: 0x47c7fc, helmetStripe: 0xff7b08,
-  },
-  {
-    id: 'navy', name: '深海蓝', number: 11,
-    body: 0x14225c, secondary: 0x0c1024, accent: 0xffc906, accent2: 0xe10600,
-    wing: 0x14225c, fin: 0xe10600, halo: 0x0c1024, rim: 0x22263a,
-    helmet: 0xe10600, helmetStripe: 0xffffff,
-  },
-  {
-    id: 'silver', name: '银箭灰', number: 44,
-    body: 0xb8bec6, secondary: 0x0f1114, accent: 0x00d2be, accent2: 0xff2222,
-    wing: 0x0f1114, fin: 0x00d2be, halo: 0x101216, rim: 0xc8ccd2,
-    helmet: 0x00d2be, helmetStripe: 0xb8bec6,
-  },
-];
+// (Cars/teams live in src/teams.js and are sculpted by src/carSculpt.js.)
 
 export const TRACKS = {
   monaco: {
@@ -66,9 +40,9 @@ export const TRACKS = {
     drs: [[0.930, 0.072]],
     env: 'monaco',
     sky: {
-      top: 0x2f5eb8, horizon: 0xd8e4f4, sun: [-0.55, 0.45, 0.42],
-      sunColor: 0xffe9c4, sunIntensity: 2.6, hemiSky: 0x9cb8e8, hemiGround: 0x6a6a62,
-      hemiIntensity: 0.85, fog: 0xc4d4ec, fogDensity: 0.0011, exposure: 1.05,
+      type: 'day', sunEl: 24, sunAz: 235, turbidity: 6.0, rayleigh: 2.2,
+      sunColor: 0xffe3b8, sunIntensity: 2.2, hemiSky: 0x9cb8e8, hemiGround: 0x6a6a62,
+      hemiIntensity: 0.65, fog: 0xc4d4ec, fogDensity: 0.0011, exposure: 0.62,
     },
   },
 
@@ -110,9 +84,9 @@ export const TRACKS = {
     drs: [[0.190, 0.295], [0.695, 0.822], [0.955, 0.040]],
     env: 'silverstone',
     sky: {
-      top: 0x4a7ac8, horizon: 0xe6ecf2, sun: [0.35, 0.78, -0.3],
-      sunColor: 0xfff6e6, sunIntensity: 2.2, hemiSky: 0xbdd2ee, hemiGround: 0x5e6e52,
-      hemiIntensity: 1.0, fog: 0xd6e0ec, fogDensity: 0.00085, exposure: 1.02,
+      type: 'day', sunEl: 55, sunAz: 195, turbidity: 8.0, rayleigh: 3.1,
+      sunColor: 0xfff6e6, sunIntensity: 2.0, hemiSky: 0xbdd2ee, hemiGround: 0x5e6e52,
+      hemiIntensity: 0.75, fog: 0xd6e0ec, fogDensity: 0.00085, exposure: 0.58,
     },
   },
 
@@ -152,11 +126,124 @@ export const TRACKS = {
     drs: [[0.945, 0.075], [0.690, 0.800]],
     env: 'suzuka',
     sky: {
-      top: 0x3670c8, horizon: 0xdfeaf6, sun: [0.5, 0.62, 0.35],
-      sunColor: 0xfff3dd, sunIntensity: 2.5, hemiSky: 0xaccbf0, hemiGround: 0x66765a,
-      hemiIntensity: 0.9, fog: 0xd2e2f0, fogDensity: 0.00080, exposure: 1.04,
+      type: 'day', sunEl: 38, sunAz: 120, turbidity: 4.5, rayleigh: 2.1,
+      sunColor: 0xfff3dd, sunIntensity: 2.3, hemiSky: 0xaccbf0, hemiGround: 0x66765a,
+      hemiIntensity: 0.70, fog: 0xd2e2f0, fogDensity: 0.00080, exposure: 0.60,
     },
   },
 };
 
-export const TRACK_ORDER = ['monaco', 'silverstone', 'suzuka'];
+TRACKS.spa = {
+  id: 'spa',
+  name: '斯帕', fullName: 'Circuit de Spa-Francorchamps', flag: '🇧🇪',
+  city: '比利时 · 阿登森林', desc: '7 公里的绿色圣殿：Eau Rouge/Raidillon 40 米爬升与 Kemmel 大直道。',
+  width: 12.5,
+  startFrac: 0.985, reverse: false,
+  walls: 'open', wallDist: 14.0,
+  apron: 58,
+  kerbThreshold: 0.0080,
+  minimapRot: 0.35,
+  pitSide: -1,
+  corners: [
+    { f: 0.049, n: 'La Source', cn: '泉水发夹弯', num: 1 },
+    { f: 0.145, n: 'Eau Rouge', cn: '红水弯', num: 3 },
+    { f: 0.158, n: 'Raidillon', cn: '瑞迪永爬坡', num: 4 },
+    { f: 0.245, n: 'Kemmel Straight', cn: 'Kemmel 直道', num: 0 },
+    { f: 0.341, n: 'Les Combes', cn: '孔布弯', num: 5 },
+    { f: 0.374, n: 'Malmedy', cn: '马尔梅迪', num: 7 },
+    { f: 0.432, n: 'Rivage', cn: '里瓦日', num: 8 },
+    { f: 0.542, n: 'Pouhon', cn: '普翁双左弯', num: 10 },
+    { f: 0.590, n: 'Fagnes', cn: '法涅', num: 12 },
+    { f: 0.640, n: 'Stavelot', cn: '斯塔沃洛', num: 14 },
+    { f: 0.715, n: 'Paul Frère', cn: '保罗·弗雷尔', num: 15 },
+    { f: 0.881, n: 'Blanchimont', cn: '布兰奇蒙', num: 17 },
+    { f: 0.963, n: 'Bus Stop', cn: '公交站减速弯', num: 18 },
+  ],
+  elevation: [
+    [0.000, 30], [0.049, 34], [0.085, 22], [0.120, 6], [0.145, 2], [0.175, 22],
+    [0.210, 34], [0.280, 44], [0.341, 52], [0.374, 50], [0.432, 38], [0.490, 30],
+    [0.542, 22], [0.590, 16], [0.640, 10], [0.715, 14], [0.800, 18], [0.881, 24],
+    [0.930, 27], [0.963, 28],
+  ],
+  drs: [[0.170, 0.330], [0.968, 0.045]],
+  env: 'spa',
+  sky: {
+    type: 'day', sunEl: 40, sunAz: 205, turbidity: 9.5, rayleigh: 3.6,
+    sunColor: 0xfff4e2, sunIntensity: 1.9, hemiSky: 0xbccbe4, hemiGround: 0x44543c,
+    hemiIntensity: 1.0, fog: 0xcfdbe8, fogDensity: 0.0012, exposure: 0.62,
+  },
+};
+
+TRACKS.monza = {
+  id: 'monza',
+  name: '蒙扎', fullName: 'Autodromo Nazionale Monza', flag: '🇮🇹',
+  city: '意大利 · 速度圣殿', desc: '皇家公园里的极速殿堂：大直道、Lesmo、Ascari 与 Parabolica。',
+  width: 13.0,
+  startFrac: 0.955, reverse: false,
+  walls: 'open', wallDist: 14.0,
+  apron: 52,
+  kerbThreshold: 0.0085,
+  minimapRot: -0.4,
+  pitSide: -1,
+  corners: [
+    { f: 0.153, n: 'Rettifilo', cn: '雷蒂菲洛减速弯', num: 1 },
+    { f: 0.240, n: 'Curva Grande', cn: '大弯', num: 3 },
+    { f: 0.365, n: 'Roggia', cn: '罗吉亚减速弯', num: 4 },
+    { f: 0.432, n: 'Lesmo 1', cn: '莱斯莫 1', num: 6 },
+    { f: 0.490, n: 'Lesmo 2', cn: '莱斯莫 2', num: 7 },
+    { f: 0.560, n: 'Serraglio', cn: '塞拉利奥', num: 0 },
+    { f: 0.693, n: 'Ascari', cn: '阿斯卡里组合弯', num: 8 },
+    { f: 0.790, n: 'Back Straight', cn: '后直道', num: 0 },
+    { f: 0.888, n: 'Parabolica', cn: '抛物线弯', num: 11 },
+  ],
+  elevation: [
+    [0.000, 1], [0.153, 2], [0.300, 3], [0.432, 4], [0.560, 3], [0.693, 2],
+    [0.800, 1], [0.888, 0], [0.950, 0.5],
+  ],
+  drs: [[0.930, 0.140], [0.700, 0.860]],
+  env: 'monza',
+  sky: {
+    type: 'day', sunEl: 10, sunAz: 253, turbidity: 7.0, rayleigh: 3.0,
+    sunColor: 0xffc584, sunIntensity: 3.2, hemiSky: 0xd7bea6, hemiGround: 0x584f38,
+    hemiIntensity: 0.6, fog: 0xe6cfae, fogDensity: 0.00105, exposure: 0.68,
+  },
+};
+
+TRACKS.singapore = {
+  id: 'singapore',
+  name: '新加坡', fullName: 'Marina Bay Street Circuit', flag: '🇸🇬',
+  city: '滨海湾 · 夜赛', desc: 'F1 首个夜间大奖赛：泛光灯下的街道、摩天楼天际线与湾畔灯火。',
+  width: 12.0,
+  startFrac: 0.985, reverse: true,
+  walls: 'street', wallDist: 2.2,
+  apron: 24,
+  kerbThreshold: 0.0105,
+  minimapRot: 1.25,
+  pitSide: -1,
+  night: true,
+  corners: [
+    { f: 0.076, n: 'Turn 1', cn: 'T1 开场三连弯', num: 1 },
+    { f: 0.135, n: 'Turn 4', cn: 'T4 快速左弯', num: 4 },
+    { f: 0.278, n: 'Memorial', cn: '纪念碑弯', num: 7 },
+    { f: 0.353, n: 'Turn 8', cn: 'T8', num: 8 },
+    { f: 0.412, n: 'Turn 9', cn: 'T9 长左弯', num: 9 },
+    { f: 0.549, n: 'Turn 11', cn: 'T11', num: 11 },
+    { f: 0.594, n: 'Anderson Bridge', cn: '安德森桥', num: 13 },
+    { f: 0.706, n: 'Turn 14', cn: 'T14', num: 14 },
+    { f: 0.751, n: 'Esplanade', cn: '滨海艺术中心弯', num: 15 },
+    { f: 0.862, n: 'Turn 16', cn: 'T16 发夹弯', num: 16 },
+    { f: 0.938, n: 'Bay Grandstand', cn: '海湾看台弯', num: 18 },
+  ],
+  elevation: [
+    [0.000, 1], [0.20, 1.5], [0.45, 2], [0.60, 1], [0.80, 1.5], [0.95, 1],
+  ],
+  drs: [[0.955, 0.068], [0.615, 0.695], [0.272, 0.335]],
+  env: 'singapore',
+  sky: {
+    type: 'night', sunEl: 48, sunAz: 190,
+    sunColor: 0xe8eeff, sunIntensity: 2.4, hemiSky: 0x39466b, hemiGround: 0x23262e,
+    hemiIntensity: 0.9, fog: 0x0c1220, fogDensity: 0.0015, exposure: 1.0,
+  },
+};
+
+export const TRACK_ORDER = ['monaco', 'silverstone', 'suzuka', 'spa', 'monza', 'singapore'];

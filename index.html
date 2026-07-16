@@ -14,12 +14,18 @@
   <div class="menu-inner">
     <div class="title-block">
       <h1 class="title">VOXEL <span>GRAND PRIX</span></h1>
-      <div class="subtitle">体素大奖赛 · 基于真实几何数据复刻的三条传奇 F1 赛道</div>
+      <div class="subtitle">体素大奖赛 · 基于真实几何数据复刻的六条传奇 F1 赛道 · 十队正赛</div>
     </div>
     <div id="track-cards"></div>
     <div class="menu-row">
-      <div class="menu-label">涂 装</div>
-      <div id="livery-row"></div>
+      <div class="menu-label">战 车</div>
+      <div id="selected-team"></div>
+      <button id="btn-garage">🏎 进入车库 · GARAGE</button>
+    </div>
+    <div class="menu-row">
+      <div class="menu-label">模 式</div>
+      <button class="mode-chip" data-mode="time">⏱ 计时赛 · 自由练习</button>
+      <button class="mode-chip" data-mode="race">🏁 正赛 · 10 队 3 圈</button>
     </div>
     <div class="controls-help">
       <span><b>W / ↑</b> 油门</span><span><b>S / ↓</b> 刹车</span><span><b>A D / ← →</b> 转向</span>
@@ -50,6 +56,7 @@
 
   <div id="hud-dash">
     <div id="hud-drs" class="drs-off">DRS</div>
+    <div id="hud-pos" class="hidden">P8<i>/8</i></div>
     <div class="dash-main">
       <div id="hud-gear">1</div>
       <div class="dash-speed">
@@ -58,6 +65,7 @@
       </div>
     </div>
     <div id="hud-rpm"><div id="hud-rpm-fill"></div></div>
+    <div id="hud-gaps" class="hidden"></div>
   </div>
 
   <canvas id="minimap" width="230" height="230"></canvas>
@@ -88,7 +96,20 @@
   </div>
 </div>
 
-<div id="loading" class="hidden"><div class="spinner"></div>正在铺设赛道…</div>
+<div id="results" class="hidden">
+  <div class="results-box">
+    <div class="results-flag">🏁</div>
+    <h2>比赛结束</h2>
+    <div id="results-pos">P1</div>
+    <div id="results-rows"></div>
+    <div class="results-actions">
+      <button id="btn-res-again">再来一场</button>
+      <button id="btn-res-menu">返回菜单</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading" class="hidden"><div class="spinner"></div><span id="loading-msg">正在铺设赛道…</span></div>
 
 <script type="module" src="./src/main.js"></script>
 </body>
