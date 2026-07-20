@@ -505,6 +505,7 @@ export async function buildOpenWorld(scene, renderer) {
   // DAY_SECONDS. Normal day; the pretty night fades in for the dark hours.
   const DAY_SECONDS = 240;
   let tod = 0.30;                       // start mid-morning
+  let nightFactor = 0;                   // 0 = full day, 1 = full night
   const _t = new THREE.Vector3(), _sd = new THREE.Vector3();
   const dayFog = new THREE.Color(0xcdd8e6), nightFog = new THREE.Color(0x0c1220);
   const _fog = new THREE.Color();
@@ -529,18 +530,19 @@ export async function buildOpenWorld(scene, renderer) {
     sun.target.position.copy(_t);
 
     // ambient + sky
-    hemi.intensity = 0.28 + day * 0.55;
+    hemi.intensity = 0.28 + day * 0.42;
     if (daySky.material.uniforms) daySky.material.uniforms.sunPosition.value.copy(_sd);
     nightMat.uniforms.uNight.value = night;   // stars/glow fade in at night
-    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.35 + day * 0.5;
+    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.32 + day * 0.28;
     if (scene.environment !== (day > 0.5 ? envDay : envNight)) {
       scene.environment = day > 0.5 ? envDay : envNight;
     }
 
-    // fog + exposure
+    // fog + exposure. Daytime kept modest so the sky/car don't blow out.
     _fog.copy(nightFog).lerp(dayFog, day);
     if (scene.fog) { scene.fog.color.copy(_fog); scene.fog.density = 0.00035 + night * 0.00028; }
-    if (renderer) renderer.toneMappingExposure = 0.64 + night * 0.4;
+    if (renderer) renderer.toneMappingExposure = 0.5 + night * 0.5;
+    nightFactor = night;                      // exposed so main can drive bloom
 
     // street lamps glow from dusk; pool lights follow nearest heads
     const lampOn = clamp01(0.55 - elev * 2.2);
@@ -563,6 +565,7 @@ export async function buildOpenWorld(scene, renderer) {
     world, group, sun, hemi,
     landmarks: scenery.landmarks, gasStations: scenery.gasStations,
     get timeOfDay() { return tod; },
+    get nightFactor() { return nightFactor; },
     update(dt, carPos) {
       tod = (tod + dt / DAY_SECONDS) % 1;
       applyTOD(carPos);

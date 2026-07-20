@@ -302,10 +302,13 @@ async function buildOpenWorldGame(teamId) {
   const env = await buildOpenWorld(scene, renderer);
   const world = env.world;
 
-  // bloom composer so lamps, windows and emissives glow (the Singapore look)
+  // bloom composer: glows lamps/windows at night. Strength is driven by the
+  // day/night cycle each frame (near 0 by day so the sky/car don't glow), and
+  // a high threshold keeps only genuinely bright pixels blooming.
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.6, 0.7));
+  const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.0, 0.6, 0.85);
+  composer.addPass(bloomPass);
   composer.addPass(new OutputPass());
   composer.setSize(window.innerWidth, window.innerHeight);
 
@@ -382,7 +385,7 @@ async function buildOpenWorldGame(teamId) {
   G = {
     scene, track: null, env, car, physics, entries, rig, particles, skids, race,
     cfg: { flag: '🗺', name: '开放世界', fullName: 'Open World', corners: [], sky: { type: 'night' } },
-    team, composer, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
+    team, composer, bloomPass, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
     onfoot, world, onFootActive: false,
   };
   window.__game = G;
@@ -572,6 +575,10 @@ function tick(dt, render = true) {
   }
 
   if (G && render) {
+    // open world: bloom only at night (near 0 by day so nothing glows)
+    if (G.bloomPass && G.env && typeof G.env.nightFactor === 'number') {
+      G.bloomPass.strength = G.env.nightFactor * 0.7;
+    }
     if (G.composer) G.composer.render();
     else renderer.render(G.scene, camera);
   }
