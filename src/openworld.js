@@ -117,29 +117,48 @@ export class OpenWorld {
 }
 // ---------------------------------------------------------------- terrain mesh
 function buildTerrainMesh(world) {
-  const R = world.radius, seg = 200;
+  // finer grid: closer quads follow world.heightAt more faithfully, which also
+  // stops props (placed at exact heightAt) poking through the mesh triangles.
+  const R = world.radius, seg = 360;
   const geo = new THREE.PlaneGeometry(R * 2, R * 2, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   const col = new Float32Array(pos.count * 3);
-  const grass1 = new THREE.Color(0x4d8a3d).convertSRGBToLinear();
-  const grass2 = new THREE.Color(0x3f7a33).convertSRGBToLinear();
+  // a small palette of natural tones, mixed by layered noise
+  const lush = new THREE.Color(0x4f9440).convertSRGBToLinear();
+  const grass = new THREE.Color(0x407a33).convertSRGBToLinear();
+  const dry = new THREE.Color(0x8a9445).convertSRGBToLinear();
+  const dirt = new THREE.Color(0x6e5a3c).convertSRGBToLinear();
   const rock = new THREE.Color(0x6b6256).convertSRGBToLinear();
-  const road = new THREE.Color(0x3a3e45).convertSRGBToLinear();
+  const road = new THREE.Color(0x33373d).convertSRGBToLinear();
+  const shoulder = new THREE.Color(0x5c5a4a).convertSRGBToLinear();
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
     const y = world.heightAt(x, z);
     pos.setY(i, y);
     const r = Math.hypot(x, z);
-    if (Math.abs(r - ROAD_R) < ROAD_HALF) {
-      c.copy(road).multiplyScalar(0.92 + vnoise(x * 0.1, z * 0.1) * 0.12);
+    const dRoad = Math.abs(r - ROAD_R);
+    if (dRoad < ROAD_HALF) {
+      // asphalt with subtle grain + a centre-line lightening
+      c.copy(road).multiplyScalar(0.88 + vnoise(x * 0.35, z * 0.35) * 0.14);
+    } else if (dRoad < ROAD_HALF + 3.5) {
+      // gravel shoulder easing off the tarmac
+      const k = (dRoad - ROAD_HALF) / 3.5;
+      c.copy(road).lerp(shoulder, k).multiplyScalar(0.9 + vnoise(x * 0.3, z * 0.3) * 0.18);
     } else {
-      const jit = 0.9 + vnoise(x * 0.08, z * 0.08) * 0.2;
-      const rim = THREE.MathUtils.smoothstep(r, 300, R);
-      c.copy(grass1).lerp(grass2, vnoise(x * 0.01, z * 0.01));
-      c.lerp(rock, THREE.MathUtils.clamp(rim * 1.3 - 0.3, 0, 0.8));
-      c.multiplyScalar(jit);
+      // grass: blend lush<->grass by broad patches, sprinkle dry + dirt patches
+      const patch = vnoise(x * 0.006 + 3, z * 0.006 + 7);       // broad meadow patches
+      const fine = vnoise(x * 0.09, z * 0.09);                  // blade-scale grain
+      const dryN = vnoise(x * 0.013 + 20, z * 0.013 + 40);      // dry-grass regions
+      const dirtN = vnoise(x * 0.02 + 60, z * 0.02 + 11);       // bare-earth spots
+      c.copy(grass).lerp(lush, THREE.MathUtils.clamp(patch * 1.5 - 0.2, 0, 1));
+      c.lerp(dry, THREE.MathUtils.clamp(dryN * 1.4 - 0.55, 0, 0.6));
+      c.lerp(dirt, THREE.MathUtils.clamp(dirtN * 1.6 - 1.02, 0, 0.7));
+      // rocky rim toward the far hills
+      const rim = THREE.MathUtils.smoothstep(r, 320, R);
+      c.lerp(rock, THREE.MathUtils.clamp(rim * 1.3 - 0.3, 0, 0.85));
+      c.multiplyScalar(0.86 + fine * 0.26);                     // fine tonal grain
     }
     col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
   }
@@ -352,10 +371,10 @@ export async function buildOpenWorld(scene, renderer) {
 
   // pool of point lights that hop to the nearest lamps around the player at
   // night (cheaper than a light per lamp)
-  const POOL = 6;
+  const POOL = 8;
   const poolLights = [];
   for (let i = 0; i < POOL; i++) {
-    const pl = new THREE.PointLight(0xffdca6, 0, 46, 1.8);
+    const pl = new THREE.PointLight(0xffe0b0, 0, 70, 1.5);
     group.add(pl); poolLights.push(pl);
   }
   const lampHeads = scenery.lampHeads || [];
@@ -423,7 +442,7 @@ export async function buildOpenWorld(scene, renderer) {
 
     // street lamps: glow ramps up as it gets dark
     const lampOn = clamp01(0.6 - elev * 2.0); // starts near dusk, full at night
-    if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 2.4;
+    if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 5.5; // brighter glow
 
     // move the point-light pool to the nearest lamps around the player
     if (lampOn > 0.02 && lampHeads.length) {
@@ -432,7 +451,7 @@ export async function buildOpenWorld(scene, renderer) {
         .sort((a, b) => a.d - b.d);
       for (let i = 0; i < poolLights.length; i++) {
         const src = near[i];
-        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 55; }
+        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 140; }
         else poolLights[i].intensity = 0;
       }
     } else {

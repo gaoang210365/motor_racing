@@ -68,15 +68,16 @@ export class GameAudio {
     if (this.master) this.master.gain.value = m ? 0 : 0.55;
   }
 
-  update(dt, { rpm = 0, throttle = 0, speed01 = 0, slide = 0, onKerb = false, onGrass = false, cockpit = false }) {
+  update(dt, { rpm = 0, throttle = 0, speed01 = 0, slide = 0, onKerb = false, onGrass = false, cockpit = false, footIdle = false }) {
     if (!this.ctx || this.muted) return;
     const t = this.ctx.currentTime;
     const f = 68 + rpm * rpm * 490 + rpm * 160;
     this.oscA.frequency.setTargetAtTime(f, t, 0.03);
     this.oscB.frequency.setTargetAtTime(f * 1.5, t, 0.03);
     this.oscC.frequency.setTargetAtTime(f * 0.5, t, 0.03);
-    const vol = (0.05 + throttle * 0.115 + rpm * 0.05) * (cockpit ? 1.25 : 1);
-    this.engineGain.gain.setTargetAtTime(vol, t, 0.05);
+    // on foot the car is parked in the distance -> a faint idle only
+    const vol = footIdle ? 0.02 : (0.05 + throttle * 0.115 + rpm * 0.05) * (cockpit ? 1.25 : 1);
+    this.engineGain.gain.setTargetAtTime(vol, t, footIdle ? 0.2 : 0.05);
     this.engineLPF.frequency.setTargetAtTime(900 + rpm * 4200 + throttle * 800, t, 0.08);
     this.wind.g.gain.setTargetAtTime(speed01 * speed01 * 0.30, t, 0.1);
     this.skid.g.gain.setTargetAtTime(Math.min(slide, 1) * 0.22, t, 0.05);

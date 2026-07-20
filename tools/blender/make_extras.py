@@ -188,38 +188,39 @@ def make_grass():
 
 
 def make_lamp():
-    """A street lamp: base, fluted pole, a curved cantilever arm and a dark
-    lantern hood. The glowing head is added in-game (emissive, switches on at
-    night). Origin at the base; faces so the arm reaches toward +x."""
+    """A refined street lamp: cast base, fluted tapered pole, a smooth curved
+    cantilever arm (5 short tapering segments) and a lantern housing. The
+    glowing head is added in-game (emissive, on at night). Origin at the base;
+    the arm reaches toward +x, head at local (1.2, 5.42)."""
     reset_scene()
     parts = []
-    dark = (0.16, 0.17, 0.20)
-    metal = (0.28, 0.30, 0.34)
-    # base + fluted pole
-    parts.append(prim_cone("base", 0.32, 0.24, 0.5, 0, 10, dark))
-    parts.append(prim_cone("pole", 0.13, 0.09, 5.0, 0.45, 10, metal))
-    parts.append(prim_cone("collar", 0.17, 0.13, 0.28, 4.7, 10, dark))
-    # curved cantilever arm made of short segments sweeping up then over +x
-    import math as _m
-    px, pz = 0.0, 5.1
-    seg_pts = [(0.0, 5.1), (0.45, 5.45), (0.95, 5.62), (1.2, 5.55)]
-    for i in range(len(seg_pts) - 1):
-        x0, z0 = seg_pts[i]; x1, z1 = seg_pts[i + 1]
-        cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    dark = (0.15, 0.16, 0.19)
+    metal = (0.30, 0.32, 0.37)
+    trim = (0.42, 0.44, 0.50)
+    # tiered cast base
+    parts.append(prim_cone("base0", 0.40, 0.34, 0.30, 0.0, 12, dark))
+    parts.append(prim_cone("base1", 0.30, 0.20, 0.35, 0.3, 12, metal))
+    # tall fluted pole (slight taper) + a decorative collar band
+    parts.append(prim_cone("pole", 0.15, 0.095, 4.9, 0.55, 12, metal))
+    parts.append(prim_cone("band", 0.155, 0.155, 0.14, 2.6, 12, trim))
+    parts.append(prim_cone("collar", 0.18, 0.12, 0.30, 5.30, 12, dark))
+    # smooth curved arm sweeping up-and-over toward +x, as short cones between
+    # a set of points (built here directly for reliability)
+    pts = [(0.0, 5.55), (0.35, 5.80), (0.72, 5.92), (1.05, 5.88), (1.2, 5.72)]
+    radii = [0.075, 0.068, 0.060, 0.052, 0.046]
+    for i in range(len(pts) - 1):
+        x0, z0 = pts[i]; x1, z1 = pts[i + 1]
         dx, dz = x1 - x0, z1 - z0
-        length = _m.hypot(dx, dz)
-        seg = prim_cone(f"arm{i}", 0.07, 0.06, length, 0, 8, metal)
-        # orient the segment along (dx,dz): rotate about Y
-        seg.rotation_euler[1] = _m.atan2(dx, dz)
-        seg.location = (cx, 0, cz - length / 2 * 0)  # cone is centered via z offset below
-        # place: cone built along +z from origin; shift to segment midpoint
-        seg.location = (cx - dx / 2, 0, cz - dz / 2)
-        seg.rotation_euler[1] = _m.atan2(dx, dz)
+        length = math.hypot(dx, dz)
+        seg = prim_cone(f"arm{i}", radii[i], radii[i + 1], length, 0, 8, metal)
+        seg.rotation_euler[1] = math.atan2(dx, dz)
+        seg.location = (x0, 0, z0)  # cone base sits at (x0,z0), extends toward (x1,z1)
         bpy.context.view_layer.objects.active = seg
         bpy.ops.object.transform_apply(location=True, rotation=True)
         parts.append(seg)
-    # lantern hood at the arm tip (~x=1.2, z=5.5)
-    parts.append(prim_box("hood", 1.2, 0, 5.42, 0.34, 0.34, 0.14, dark))
+    # lantern housing (dark hood) at the arm tip; glowing head added in-game
+    parts.append(prim_cone("hoodtop", 0.26, 0.30, 0.14, 5.62, 10, dark))
+    parts.append(prim_box("hood", 1.2, 0, 5.42, 0.34, 0.34, 0.16, dark))
     return join(parts, "lamp")
 def _stem_and_leaves(parts, top_z):
     parts.append(prim_cone("stem", 0.018, 0.012, top_z, 0, 5, (0.22, 0.5, 0.18)))

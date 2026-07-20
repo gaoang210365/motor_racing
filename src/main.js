@@ -541,6 +541,8 @@ function tick(dt, render = true) {
       G.onfoot.group.visible = G.rig.footView !== 'first';
       G.rig.update(dt);
       G.env.update(dt, G.onfoot.pos);
+      // parked car idles quietly in the distance — fade the engine right down
+      audio.update(dt, { rpm: 0.12, throttle: 0, speed01: 0, slide: 0, footIdle: true });
       hud.update(G);
     } else {
       G.accum = Math.min(G.accum + dt, FIXED * 8);
