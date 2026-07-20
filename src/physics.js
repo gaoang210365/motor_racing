@@ -24,6 +24,8 @@ export const CAR = {
   satSlip: 0.095,      // rad at grip peak
   steerMax: 0.40, steerMin: 0.062, steerFade: 0.0036,
   brakeForceMax: 42000,
+  reverseMax: 8.5,     // m/s reverse speed cap (~30 km/h)
+  reverseForce: 8200,  // N reverse thrust once stopped
 };
 
 export const GEARS = [
@@ -58,6 +60,9 @@ export class CarPhysics {
     this.wheelSpin = 0;     // rad/s for visual wheel rotation
     this.gearShiftT = 0;
     this.groundY = 0; this.groundPitch = 0; this.groundRoll = 0;
+    this.reversing = false;   // true while actively backing up
+    this.freeRoam = false;    // roam mode: soft boundaries + terrain follow
+    this.groundYFn = null;     // (pos, sm, side, dist) => y, provided in roam
   }
 
   // track.query() reuses a shared scratch object — every car keeps its OWN
@@ -158,10 +163,31 @@ export class CarPhysics {
       const capSq = Math.max(0, (muR * Nr) ** 2 - (0.92 * FyR) ** 2);
       Fdrive = Math.min(Fdrive, Math.sqrt(capSq));
     }
+    // ---- brake / reverse ----
+    // `Fbrake` is a force acting in the -x (rearward) body direction, so it's
+    // subtracted in the integrator below. Positive => pushes the car backward.
+    //   • rolling forward + S  -> positive brake force (decelerate)
+    //   • stopped/reversing + S -> positive reverse thrust, capped at a slow
+    //     speed so it stays a parking/maneuver aid, not a second forward gear
+    //   • coasting backward, S released -> negative (drag brake toward 0)
     let Fbrake = 0;
-    if (this.brake > 0 && Math.abs(this.vx) > 0.05) {
-      const cap = CAR.muBrake * surf.mu * (Nf + Nr);
-      Fbrake = Math.min(CAR.brakeForceMax * this.brake, cap) * Math.sign(this.vx);
+    this.reversing = false;
+    const wantReverse = this.brake > 0 && this.throttle === 0 && !this.locked;
+    if (this.vx > 0.4) {
+      if (this.brake > 0) {
+        const cap = CAR.muBrake * surf.mu * (Nf + Nr);
+        Fbrake = Math.min(CAR.brakeForceMax * this.brake, cap);   // decelerate
+      }
+    } else if (wantReverse) {
+      if (this.vx > -CAR.reverseMax) {
+        Fbrake = CAR.reverseForce * this.brake * surf.mu;         // reverse thrust
+        this.reversing = true;
+      } else {
+        this.reversing = true;                                     // hold at cap: coast
+      }
+    } else if (this.vx < -0.05) {
+      // backing up with S released -> gentle drag brake brings it to rest
+      Fbrake = -CAR.rolling * 1.2;
     }
     const dragF = (CAR.drag * (this.drsOpen ? 0.82 : 1)) * this.vx * Math.abs(this.vx)
       + CAR.rolling * Math.sign(this.vx)
@@ -188,7 +214,11 @@ export class CarPhysics {
       this.yawRate = THREE.MathUtils.lerp(kinYaw, this.yawRate, blend);
       this.vy = THREE.MathUtils.lerp(0, this.vy, blend);
     }
-    if (this.brake > 0 && Math.abs(this.vx) < 0.4 && this.throttle === 0) { this.vx = 0; this.vy *= 0.5; }
+    // snap to a dead stop only when locked (pre-race) or fully coasting —
+    // never while reverse is being requested, so S can back the car up
+    if (this.locked || (this.throttle === 0 && this.brake === 0 && Math.abs(this.vx) < 0.25)) {
+      if (Math.abs(this.vx) < 0.25) { this.vx = 0; this.vy *= 0.5; }
+    }
 
     this.heading += this.yawRate * dt;
 
@@ -198,6 +228,9 @@ export class CarPhysics {
     // ---- walls ----
     const q2 = this.track.query(this.pos, this.lastIdx);
     this.lastIdx = q2.idx;
+    if (this.freeRoam) {
+      this._roamBounds(q2);
+    } else {
     const margin = 0.95;
     for (const side of [1, -1]) {
       const wall = side > 0 ? q2.wallL : q2.wallR;
@@ -217,15 +250,54 @@ export class CarPhysics {
         }
       }
     }
+    }
 
     // ---- ground follow ----
-    this.groundY = q2.y; // road is laterally flat
+    // On track (or non-roam) the road is laterally flat -> use q.y. In roam
+    // mode, off the road, follow the actual terrain surface so the car sits
+    // on the grass/runoff instead of hovering at road height.
+    const onRoad2 = Math.abs(q2.lat) <= this.track.width / 2 + 0.1;
+    if (this.freeRoam && this.groundYFn && !onRoad2) {
+      const gy = this.groundYFn(q2);
+      this.groundY = THREE.MathUtils.damp(this.groundY, gy, 18, dt);
+    } else {
+      this.groundY = q2.y; // road is laterally flat
+    }
     this.pos.y = this.groundY;
     this.groundPitch = Math.atan(F.dot(q2.t) * q2.dyds);
     this.groundRoll = 0;
 
     this.wheelSpin = this.vx / 0.35;
     return q2;
+  }
+
+  // Roam mode boundary: no hard armco. The player can drive across the
+  // runoff/infield freely; only at the outer edge of the well-defined
+  // ground band do we softly push back (and kill outward velocity) so the
+  // car never wanders into un-rendered far terrain or figure-8 gaps.
+  _roamBounds(q) {
+    const sm = this.track.samples[q.idx];
+    const side = q.lat >= 0 ? 1 : -1;
+    const wall = side > 0 ? sm.wallL : sm.wallR;
+    // stay within the visible sweep band: wall + apron width, minus a margin.
+    // pinched sections (skipApron / narrow apronW) clamp much tighter.
+    const apron = this.track.skipApron[sm.idx] ? 0.2
+      : Math.min(sm.apronW ?? 6, this.track.cfg.apron);
+    const limit = wall + apron - 1.4;
+    const lat = q.lat * side;
+    if (lat > limit) {
+      const over = lat - limit;
+      this.pos.addScaledVector(q.n, -over * side);
+      const F = this.forward(_f), Lf = this.left(_l);
+      const vWorld = _v.copy(F).multiplyScalar(this.vx).addScaledVector(Lf, this.vy);
+      const vn = vWorld.dot(q.n) * side;
+      if (vn > 0) {
+        vWorld.addScaledVector(q.n, -vn * side); // remove outward component
+        vWorld.multiplyScalar(0.72);
+        this.vx = vWorld.dot(F);
+        this.vy = vWorld.dot(Lf);
+      }
+    }
   }
 }
 

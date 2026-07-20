@@ -94,7 +94,8 @@ export class Hud {
     const { physics: p, race } = state;
     const kmh = Math.round(p.speedKmh);
     if (this._lastVals.kmh !== kmh) { this.el.speed.textContent = kmh; this._lastVals.kmh = kmh; }
-    if (this._lastVals.gear !== p.gear) { this.el.gear.textContent = p.gear; this._lastVals.gear = p.gear; }
+    const gearTxt = (p.reversing || p.speed > 0.3 && p.vx < -0.05) ? 'R' : String(p.gear);
+    if (this._lastVals.gear !== gearTxt) { this.el.gear.textContent = gearTxt; this._lastVals.gear = gearTxt; }
     this.el.rpmFill.style.width = `${Math.round(p.rpm * 100)}%`;
     this.el.rpmFill.classList.toggle('redline', p.rpm > 0.94);
 

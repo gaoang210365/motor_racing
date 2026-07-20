@@ -7,7 +7,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { TRACKS, TRACK_ORDER } from './config.js';
 import { CIRCUITS } from './data/circuits.js';
 import { Track } from './track.js';
-import { buildEnvironment } from './environment.js';
+import { buildEnvironment, groundHeightAt } from './environment.js';
 import { buildSculptedCar, buildCarInstance, clearCarCache } from './carSculpt.js';
 import { TEAMS, TEAM_ORDER, loadSelectedTeam } from './teams.js';
 import { CarPhysics } from './physics.js';
@@ -37,9 +37,13 @@ const hud = new Hud();
 let G = null; // current game session
 let selTrack = TRACK_ORDER[0];
 let selTeam = loadSelectedTeam();
-let selMode = localStorage.getItem('voxelf1-mode') === 'race' ? 'race' : 'time';
+let selMode = ['race', 'roam'].includes(localStorage.getItem('voxelf1-mode'))
+  ? localStorage.getItem('voxelf1-mode') : 'time';
 let paused = false;
-const RACE_LOD = 0.022;
+const RACE_LOD = 0.022;      // AI cars in a full 10-car race (keeps FPS up)
+const PLAYER_LOD = 0.016;    // player's car: showroom-grade sculpt. Measured:
+                             // surface detail saturates here — finer voxels
+                             // add build cost but no extra rendered geometry.
 const RACE_LAPS = 3;
 
 const garage = new Garage(
@@ -85,10 +89,11 @@ function setupMenu() {
   const refreshMode = () => {
     document.querySelectorAll('.mode-chip').forEach(c => c.classList.toggle('on', c.dataset.mode === selMode));
     const btn = document.getElementById('btn-start');
-    if (btn) btn.textContent = selMode === 'race' ? `发车 · ${RACE_LAPS} 圈正赛` : '进入赛道 · LIGHTS OUT';
+    if (btn) btn.textContent = selMode === 'race' ? `发车 · ${RACE_LAPS} 圈正赛`
+      : selMode === 'roam' ? '开始探索 · FREE ROAM' : '进入赛道 · LIGHTS OUT';
   };
   document.querySelectorAll('.mode-chip').forEach(c => c.addEventListener('click', () => {
-    selMode = c.dataset.mode === 'race' ? 'race' : 'time';
+    selMode = ['race', 'roam'].includes(c.dataset.mode) ? c.dataset.mode : 'time';
     localStorage.setItem('voxelf1-mode', selMode);
     refreshMode();
   }));
@@ -183,8 +188,10 @@ async function buildGame(trackId, teamId) {
     composer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  // ---- cars: player (+ 7 AI in race mode, two per team) ----
-  const car = await buildCarInstance(team, RACE_LOD, (f, label) => {
+  // ---- cars: player (+ 9 AI in race mode) ----
+  // player's car gets a finer voxel grid (0.016) than the AI pack (0.022):
+  // ~2x the surface detail while the 9 AI cars stay light for frame rate.
+  const car = await buildCarInstance(team, PLAYER_LOD, (f, label) => {
     if (loadMsg && label) loadMsg.textContent = label;
   }, 'race');
   car.group.rotation.order = 'YXZ';
@@ -218,12 +225,20 @@ async function buildGame(trackId, teamId) {
   }
   entries.push(playerEntry); // player starts at the back of the grid
 
-  // grid placement (matches the painted slots)
-  entries.forEach((e, i) => {
-    const back = 9 + i * 9;
-    e.physics.placeAt(((-back / track.length) % 1 + 1) % 1, (i % 2 === 0 ? 1 : -1) * track.width * 0.22);
-    e.physics.locked = true;
-  });
+  // placement: race/time use the painted grid slots; roam drops the player
+  // on the start line, ready to drive immediately with no countdown.
+  if (selMode === 'roam') {
+    physics.placeAt(0.001, 0);
+    physics.freeRoam = true;
+    physics.locked = false;
+    physics.groundYFn = q => groundHeightAt(track, q);
+  } else {
+    entries.forEach((e, i) => {
+      const back = 9 + i * 9;
+      e.physics.placeAt(((-back / track.length) % 1 + 1) % 1, (i % 2 === 0 ? 1 : -1) * track.width * 0.22);
+      e.physics.locked = true;
+    });
+  }
 
   const rig = new CameraRig(camera, car, physics, track);
   const particles = new Particles(scene);

@@ -593,6 +593,17 @@ function groundYAt(track, sm, side, dist) {
   return terrainYAt(g.df, g.amp, px, pz);
 }
 
+// Public helper for the vehicle model in roam mode: ground height under a
+// world position, using the same single-valued surface as the mesh so the
+// car sits exactly on the visible ground on- and off-track. `q` is a
+// track.query() result (gives nearest sample idx + signed lateral offset).
+export function groundHeightAt(track, q) {
+  const sm = track.samples[q.idx];
+  if (!sm) return q.y;
+  const side = q.lat >= 0 ? 1 : -1;
+  return groundYAt(track, sm, side, Math.abs(q.lat));
+}
+
 // floodlight pylons (night street race) + positions for the light pool
 function makeFloodlights(track, ctx) {
   const m = new Mesher();

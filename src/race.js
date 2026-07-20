@@ -18,6 +18,7 @@ export class Race {
     this.hud = hud;
     this.audio = audio;
     this.mode = opts.mode || 'time';
+    this.roam = this.mode === 'roam';
     this.laps = this.mode === 'race' ? (opts.laps || 3) : Infinity;
     this.state = 'idle';
     this.raceTime = 0;
@@ -64,6 +65,18 @@ export class Race {
   }
 
   start() {
+    // roam mode: no lights, just start driving right away
+    if (this.roam) {
+      this.state = 'racing';
+      this.raceTime = 0;
+      for (const e of this.entries) {
+        e.physics.locked = false;
+        e.prevFrac = e.physics.info ? e.physics.info.frac : 0;
+        e.lapStart = 0;
+      }
+      this.hud.message('🌄 自由驰骋 · 尽情探索这条赛道<br><span class="en">FREE ROAM</span>', 2600, 'go');
+      return;
+    }
     this.state = 'countdown';
     for (const e of this.entries) e.physics.locked = true;
     this.hud.show('lights', true);
@@ -304,7 +317,7 @@ export class Race {
               localStorage.setItem(this.storageKey(), String(Math.round(lapMs)));
             }
             this.audio.lapDone(isBest);
-            if (this.mode === 'time' || e.lapCount < this.laps) {
+            if (!this.roam && (this.mode === 'time' || e.lapCount < this.laps)) {
               this.hud.message(
                 `${isBest ? '<span class="best">🏁 个人最快圈！</span>' : '🏁 完成一圈'}<br><b>${msFmt(lapMs)}</b>`,
                 2200, isBest ? 'purple' : ''
@@ -369,9 +382,9 @@ export class Race {
     ranked.forEach((e, i) => { e.pos = i + 1; });
     this.ranked = ranked;
 
-    // wrong way (player, manual only)
+    // wrong way (player, manual only) — never in roam, where any direction is fine
     const p = this.player.physics;
-    if (!this.autopilotActive && p.info) {
+    if (!this.roam && !this.autopilotActive && p.info) {
       const F = p.forward(_f);
       const along = F.dot(p.info.t);
       if (p.speed > 4 && along < -0.2) this._wrongT += dt; else this._wrongT = 0;
@@ -409,7 +422,7 @@ export class Race {
     this.player.cp = [false, false];
     this.player.prevFrac = p.info.frac;
     this.player.lapStart = this.raceTime;
-    this.hud.message('已重置到赛道 · 本圈作废', 1500);
+    this.hud.message(this.roam ? '已回到赛道中线' : '已重置到赛道 · 本圈作废', 1500);
   }
 }
 
