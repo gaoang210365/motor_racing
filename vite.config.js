@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 
 export default defineConfig({
   base: './', // relative asset paths so the build works on GitHub Pages subpaths
+  assetsInclude: ['**/*.glb'], // bundle Blender-authored props as hashed assets
   server: {
     port: Number(process.env.PORT) || 5173,
     strictPort: false,

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 
 const G = 9.81;
+const CAR_RADIUS = 1.4; // effective collision disc radius for prop hits
 
 export const CAR = {
   mass: 798,
@@ -265,6 +266,7 @@ export class CarPhysics {
     let q2;
     if (this.world) {
       this._worldBounds();
+      this._worldCollide();
       // sit on the terrain and pitch/roll to its normal
       const gy = this.world.heightAt(this.pos.x, this.pos.z);
       this.groundY = THREE.MathUtils.damp(this.groundY, gy, 22, dt);
@@ -319,6 +321,30 @@ export class CarPhysics {
 
     this.wheelSpin = this.vx / 0.35;
     return q2;
+  }
+
+  // Prop collision: the car is a disc; on overlap with a tree/rock/building
+  // collider it's pushed out along the contact normal and the inbound speed
+  // is killed (a hard stop against solid objects). Records wallHit for fx.
+  _worldCollide() {
+    const hit = this.world.collide(this.pos.x, this.pos.z, CAR_RADIUS);
+    if (!hit) return;
+    // push the car out of the object
+    this.pos.x += hit.nx * hit.pen;
+    this.pos.z += hit.nz * hit.pen;
+    const F = this.forward(_f), Lf = this.left(_l);
+    const vWorld = _v.copy(F).multiplyScalar(this.vx).addScaledVector(Lf, this.vy);
+    const vn = vWorld.x * hit.nx + vWorld.z * hit.nz; // speed along contact normal
+    if (vn < 0) {
+      // moving into the object: remove the inbound component + a chunk of the
+      // tangential slide, so a head-on hit stops the car dead
+      this.wallHit = Math.max(this.wallHit, -vn);
+      vWorld.x -= hit.nx * vn; vWorld.z -= hit.nz * vn;
+      vWorld.multiplyScalar(0.35);       // scrub most of the remaining slide
+      this.vx = vWorld.dot(F);
+      this.vy = vWorld.dot(Lf);
+      this.yawRate *= 0.4;
+    }
   }
 
   // Open-world soft boundary: a large circular arena. Near the edge we push

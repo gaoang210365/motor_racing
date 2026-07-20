@@ -269,9 +269,9 @@ async function buildOpenWorldGame(teamId) {
   const scene = new THREE.Scene();
   renderer.toneMappingExposure = 0.6;
 
-  if (loadMsg) loadMsg.textContent = '正在生成开放世界地形…';
+  if (loadMsg) loadMsg.textContent = '正在生成开放世界地形与模型…';
   await new Promise(r => setTimeout(r, 16));
-  const env = buildOpenWorld(scene, renderer);
+  const env = await buildOpenWorld(scene, renderer);
   const world = env.world;
 
   if (loadMsg) loadMsg.textContent = '正在打造你的赛车…';
@@ -297,19 +297,39 @@ async function buildOpenWorldGame(teamId) {
   const particles = new Particles(scene);
   const skids = new SkidMarks(scene);
 
-  // race shim: satisfies the game loop + HUD without laps/AI
+  // race shim: satisfies the game loop + HUD without laps/AI. Also tracks the
+  // silo landmarks as simple exploration checkpoints.
+  const landmarks = env.landmarks || [];
   const race = {
     mode: 'explore', state: 'racing', autopilotActive: false,
     entries, player: playerEntry,
     lapCount: 1, lastLapMs: null, currentLapMs: 0, bestLapMs: null, playerPos: 1,
-    wrongWay: false,
-    start() { hud.message('🗺 开放世界 · 自由驾驶,尽情探索<br><span class="en">OPEN WORLD</span>', 2600, 'go'); },
-    cancelTimers() {}, reset() {
+    wrongWay: false, found: 0,
+    start() {
+      hud.message(`🗺 开放世界 · 找到全部 ${landmarks.length} 座地标筒仓!<br><span class="en">EXPLORE · ${landmarks.length} LANDMARKS</span>`, 3000, 'go');
+    },
+    cancelTimers() {},
+    reset() {
       const s = world.spawn(); physics.placeAtWorld(s.x, s.z, s.heading);
       hud.message('已回到出发点', 1400);
     },
     inputFor(e, userInput) { return userInput; },
-    resolveCollisions() {}, update() {}, gaps() { return null; },
+    resolveCollisions() {},
+    update() {
+      // landmark checkpoints: drive within 22 m of an unreached silo
+      for (const lm of landmarks) {
+        if (lm.reached) continue;
+        if (Math.hypot(physics.pos.x - lm.x, physics.pos.z - lm.z) < 22) {
+          lm.reached = true; this.found++;
+          if (this.found >= landmarks.length) {
+            hud.message('🏆 你找到了所有地标!自由探索继续<br><span class="en">ALL LANDMARKS FOUND</span>', 3200, 'purple');
+          } else {
+            hud.message(`✅ 地标 ${this.found}/${landmarks.length}`, 1600);
+          }
+        }
+      }
+    },
+    gaps() { return null; },
   };
 
   hud.setMode('explore', 0);

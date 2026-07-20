@@ -4,6 +4,11 @@
 // / bounds. Terrain + sky + lighting + scenery are all self-contained here.
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import treeUrl from './models/tree.glb?url';
+import rockUrl from './models/rock.glb?url';
+import barnUrl from './models/barn.glb?url';
+import siloUrl from './models/silo.glb?url';
 
 // ---- deterministic value-noise fbm ----
 function vnoise(x, z) {
@@ -32,6 +37,46 @@ export class OpenWorld {
     this.cx = 0; this.cz = 0;
     this.radius = cfg.radius ?? 1500;
     this.bounds = { cx: 0, cz: 0, radius: this.radius - 12 };
+    // collider spatial hash: circular colliders bucketed into a grid so the
+    // physics step only tests a handful of nearby props per frame
+    this.cell = 40;
+    this.grid = new Map();
+    this.colliders = [];
+  }
+
+  addCollider(x, z, r) {
+    const c = { x, z, r };
+    this.colliders.push(c);
+    const k = `${Math.floor(x / this.cell)},${Math.floor(z / this.cell)}`;
+    if (!this.grid.has(k)) this.grid.set(k, []);
+    this.grid.get(k).push(c);
+  }
+
+  // Resolve the car (a disc of radius carR at x,z) against nearby prop
+  // colliders. Returns { nx, nz, pen } for the deepest overlap, or null.
+  collide(x, z, carR) {
+    const cx = Math.floor(x / this.cell), cz = Math.floor(z / this.cell);
+    let best = null, bestPen = 0;
+    for (let gz = cz - 1; gz <= cz + 1; gz++) {
+      for (let gx = cx - 1; gx <= cx + 1; gx++) {
+        const list = this.grid.get(`${gx},${gz}`);
+        if (!list) continue;
+        for (const c of list) {
+          const dx = x - c.x, dz = z - c.z;
+          const d = Math.hypot(dx, dz);
+          const minD = c.r + carR;
+          if (d < minD) {
+            const pen = minD - d;
+            if (pen > bestPen) {
+              bestPen = pen;
+              const inv = d > 1e-4 ? 1 / d : 0;
+              best = { nx: dx * inv, nz: dz * inv, pen };
+            }
+          }
+        }
+      }
+    }
+    return best;
   }
 
   heightAt(x, z) {
@@ -125,62 +170,85 @@ function mulberry(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
-function buildScenery(world) {
+// pull the single mesh (geometry + vertex-coloured material) out of a glb
+async function loadPropGeo(loader, url) {
+  const gltf = await loader.loadAsync(url);
+  let mesh = null;
+  gltf.scene.traverse(o => { if (o.isMesh && !mesh) mesh = o; });
+  const geo = mesh.geometry;
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+  return { geo, mat };
+}
+
+// Scatter Blender-authored props with InstancedMesh and register a circular
+// collider per instance so the car is stopped on impact.
+async function buildScenery(world) {
   const group = new THREE.Group();
-  const rnd = mulberry(1337);
-  const N_TREES = 900, N_ROCKS = 260;
+  const loader = new GLTFLoader();
+  const [tree, rock, barn, silo] = await Promise.all([
+    loadPropGeo(loader, treeUrl), loadPropGeo(loader, rockUrl),
+    loadPropGeo(loader, barnUrl), loadPropGeo(loader, siloUrl),
+  ]);
+
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
   const _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
-  // trees: trunk (cylinder) + canopy (cone), two instanced meshes
-  const trunkGeo = new THREE.CylinderGeometry(0.28, 0.42, 3.2, 6);
-  trunkGeo.translate(0, 1.6, 0);
-  const canopyGeo = new THREE.ConeGeometry(2.4, 6.2, 7);
-  canopyGeo.translate(0, 5.6, 0);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4630, roughness: 1 });
-  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x2f6d2a, roughness: 1 });
-  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, N_TREES);
-  const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, N_TREES);
-  trunks.castShadow = canopies.castShadow = true;
-  let ti = 0;
-  for (let i = 0; i < N_TREES * 3 && ti < N_TREES; i++) {
-    const a = rnd() * Math.PI * 2, r = 130 + rnd() * (world.radius - 200);
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    if (Math.abs(Math.hypot(x, z) - ROAD_R) < ROAD_HALF + 6) continue; // clear the road
-    const sc = 0.7 + rnd() * 0.9;
-    _p.set(x, world.heightAt(x, z), z);
-    _q.setFromAxisAngle(_up, rnd() * Math.PI * 2);
-    _s.set(sc, sc * (0.85 + rnd() * 0.4), sc);
-    _m.compose(_p, _q, _s);
-    trunks.setMatrixAt(ti, _m); canopies.setMatrixAt(ti, _m); ti++;
+  // generic scatterer: places `count` instances, registers colliders
+  function scatter(prop, count, { rMin, rMax, sMin, sMax, clearRoad, colliderR, seed }) {
+    const rnd = mulberry(seed);
+    const inst = new THREE.InstancedMesh(prop.geo, prop.mat, count);
+    inst.castShadow = true; inst.receiveShadow = true;
+    let n = 0;
+    for (let i = 0; i < count * 4 && n < count; i++) {
+      const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      if (clearRoad && Math.abs(Math.hypot(x, z) - ROAD_R) < ROAD_HALF + clearRoad) continue;
+      const sc = sMin + rnd() * (sMax - sMin);
+      _p.set(x, world.heightAt(x, z), z);
+      _q.setFromAxisAngle(_up, rnd() * Math.PI * 2);
+      _s.set(sc, sc, sc);
+      _m.compose(_p, _q, _s);
+      inst.setMatrixAt(n, _m);
+      world.addCollider(x, z, colliderR * sc);
+      n++;
+    }
+    inst.count = n;
+    inst.instanceMatrix.needsUpdate = true;
+    group.add(inst);
+    return n;
   }
-  trunks.count = canopies.count = ti;
-  group.add(trunks, canopies);
 
-  // rocks: instanced icosahedron
-  const rockGeo = new THREE.IcosahedronGeometry(1, 0);
-  const rockMat = new THREE.MeshStandardMaterial({ color: 0x726a5e, roughness: 1, flatShading: true });
-  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, N_ROCKS);
-  rocks.castShadow = rocks.receiveShadow = true;
-  let ri = 0;
-  for (let i = 0; i < N_ROCKS * 3 && ri < N_ROCKS; i++) {
-    const a = rnd() * Math.PI * 2, r = 120 + rnd() * (world.radius - 180);
+  const rMax = world.radius - 120;
+  scatter(tree, 900, { rMin: 130, rMax, sMin: 0.7, sMax: 1.7, clearRoad: 6, colliderR: 0.9, seed: 1337 });
+  scatter(rock, 240, { rMin: 120, rMax, sMin: 0.6, sMax: 2.6, clearRoad: 3, colliderR: 1.0, seed: 91 });
+  scatter(barn, 14, { rMin: 200, rMax: rMax - 60, sMin: 1.0, sMax: 1.5, clearRoad: 16, colliderR: 4.2, seed: 7 });
+
+  // silos as landmark checkpoints — placed on a wide ring, returned so the
+  // session can use them as exploration goals
+  const landmarks = [];
+  const silosInst = new THREE.InstancedMesh(silo.geo, silo.mat, 6);
+  silosInst.castShadow = true;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.4, r = world.radius * 0.62;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    if (Math.abs(Math.hypot(x, z) - ROAD_R) < ROAD_HALF + 3) continue;
-    const sc = 0.6 + rnd() * 2.2;
-    _p.set(x, world.heightAt(x, z) + sc * 0.3, z);
-    _q.setFromAxisAngle(_up, rnd() * Math.PI * 2);
-    _s.set(sc, sc * (0.6 + rnd() * 0.5), sc);
+    const sc = 1.3;
+    _p.set(x, world.heightAt(x, z), z);
+    _q.setFromAxisAngle(_up, a);
+    _s.set(sc, sc, sc);
     _m.compose(_p, _q, _s);
-    rocks.setMatrixAt(ri, _m); ri++;
+    silosInst.setMatrixAt(i, _m);
+    world.addCollider(x, z, 2.6 * sc);
+    landmarks.push({ x, z, reached: false });
   }
-  rocks.count = ri;
-  group.add(rocks);
-  return group;
+  silosInst.instanceMatrix.needsUpdate = true;
+  group.add(silosInst);
+
+  return { group, landmarks };
 }
 
 // ---------------------------------------------------------------- entry point
-export function buildOpenWorld(scene, renderer) {
+export async function buildOpenWorld(scene, renderer) {
   const world = new OpenWorld({ radius: 1500 });
   const group = new THREE.Group();
 
@@ -202,12 +270,13 @@ export function buildOpenWorld(scene, renderer) {
   group.add(sun, sun.target);
 
   group.add(buildTerrainMesh(world));
-  group.add(buildScenery(world));
+  const scenery = await buildScenery(world);
+  group.add(scenery.group);
   scene.add(group);
 
   const _t = new THREE.Vector3();
   return {
-    world, group, sun, hemi,
+    world, group, sun, hemi, landmarks: scenery.landmarks,
     update(dt, carPos) {
       const snap = 4;
       _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
