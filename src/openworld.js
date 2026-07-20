@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import treeUrl from './models/tree.glb?url';
 import rockUrl from './models/rock.glb?url';
 import barnUrl from './models/barn.glb?url';
@@ -37,6 +38,16 @@ function fbm(x, z) {
 const HILL_AMP = 34;   // metres of relief toward the rim
 const ROAD_R = 620;    // radius of the paved ring road
 const ROAD_HALF = 9;   // half-width of the paved band
+const ROAD2_HALF = 8;  // half-width of the straight cross highway (along x, z=0)
+
+// distance from (x,z) to the nearest road centre-band (ring or straight).
+// Returns the perpendicular distance to whichever road is closer.
+function roadDist(x, z) {
+  const r = Math.hypot(x, z);
+  const dRing = Math.abs(r - ROAD_R);
+  const dStraight = Math.abs(z);            // straight highway runs along +/-x at z=0
+  return Math.min(dRing, dStraight);
+}
 
 export class OpenWorld {
   constructor(cfg = {}) {
@@ -91,7 +102,8 @@ export class OpenWorld {
     const rolling = (fbm(x * 0.0016 + 5, z * 0.0016 + 9) - 0.5) * 2;
     let y = rim * HILL_AMP + rolling * (6 + rim * HILL_AMP);
     y += (fbm(x * 0.02 + 50, z * 0.02 + 20) - 0.5) * 1.1;
-    const dRoad = Math.abs(r - ROAD_R);
+    // flatten a smooth corridor under whichever road is nearer
+    const dRoad = roadDist(x, z);
     if (dRoad < ROAD_HALF + 14) {
       const flat = rim * HILL_AMP * 0.35 + (fbm(x * 0.0016 + 5, z * 0.0016 + 9) - 0.5) * 4;
       const k = 1 - THREE.MathUtils.smoothstep(dRoad, ROAD_HALF, ROAD_HALF + 14);
@@ -110,7 +122,9 @@ export class OpenWorld {
 
   surfaceAt(x, z) {
     const r = Math.hypot(x - this.cx, z - this.cz);
-    return Math.abs(r - ROAD_R) < ROAD_HALF ? 'road' : 'grass';
+    const onRing = Math.abs(r - ROAD_R) < ROAD_HALF;
+    const onStraight = Math.abs(z) < ROAD2_HALF && Math.abs(x) < this.radius - 120;
+    return (onRing || onStraight) ? 'road' : 'grass';
   }
 
   spawn() { return { x: 0, z: ROAD_R, heading: Math.PI / 2 }; }
@@ -138,7 +152,9 @@ function buildTerrainMesh(world) {
     const y = world.heightAt(x, z);
     pos.setY(i, y);
     const r = Math.hypot(x, z);
-    const dRoad = Math.abs(r - ROAD_R);
+    // distance to whichever road is nearer (ring or straight highway at z=0)
+    const onStraightSpan = Math.abs(x) < R - 120;
+    const dRoad = Math.min(Math.abs(r - ROAD_R), onStraightSpan ? Math.abs(z) : 1e9);
     if (dRoad < ROAD_HALF) {
       // asphalt with subtle grain + a centre-line lightening
       c.copy(road).multiplyScalar(0.88 + vnoise(x * 0.35, z * 0.35) * 0.14);
@@ -169,15 +185,35 @@ function buildTerrainMesh(world) {
   return mesh;
 }
 
-function buildSky(renderer, scene) {
-  const sky = new Sky();
-  sky.scale.setScalar(4000);
-  const u = sky.material.uniforms;
-  u.turbidity.value = 6; u.rayleigh.value = 2.4;
-  u.mieCoefficient.value = 0.005; u.mieDirectionalG.value = 0.8;
-  const sunDir = new THREE.Vector3().setFromSphericalCoords(1,
-    THREE.MathUtils.degToRad(90 - 46), THREE.MathUtils.degToRad(150));
-  u.sunPosition.value.copy(sunDir);
+// A night sky dome: deep-blue gradient, a warm city glow at the horizon and a
+// scatter of twinkling stars — matching the Singapore night look the player
+// likes. Self-lit (BasicMaterial via shader), unaffected by scene lights.
+function buildNightSky(renderer, scene) {
+  const geo = new THREE.SphereGeometry(3600, 40, 24);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: `varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec3 vDir;
+      float hash(vec3 p){ p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+      void main(){
+        vec3 d = normalize(vDir);
+        float h = clamp(d.y, -0.05, 1.0);
+        // deep blue zenith -> lighter near horizon
+        vec3 col = mix(vec3(0.10, 0.14, 0.24), vec3(0.02, 0.03, 0.07), pow(clamp(h,0.0,1.0), 0.45));
+        // warm amber city glow hugging the horizon
+        float glow = smoothstep(0.16, -0.02, d.y);
+        col = mix(col, vec3(0.22, 0.17, 0.13), glow * 0.75);
+        // stars in the upper sky
+        vec3 sp = floor(d * 230.0);
+        float star = step(0.9975, hash(sp));
+        float tw = 0.55 + 0.45 * hash(sp + 3.0);
+        col += vec3(0.9, 0.95, 1.0) * star * tw * smoothstep(0.06, 0.3, d.y);
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  const sky = new THREE.Mesh(geo, mat);
+  sky.renderOrder = -10;
   let envTex = null;
   if (renderer) {
     const pmrem = new THREE.PMREMGenerator(renderer);
@@ -185,7 +221,58 @@ function buildSky(renderer, scene) {
     envTex = pmrem.fromScene(tmp, 0.06).texture;
     tmp.remove(sky); pmrem.dispose();
   }
-  return { sky, envTex, sunDir };
+  return { sky, envTex };
+}
+
+// A distant ring of skyscrapers with lit windows, just past the world rim, to
+// give the night horizon that glowing-city look (bloom picks up the windows).
+function buildSkyline(world) {
+  const group = new THREE.Group();
+  const rnd = mulberry(4242);
+  // lit-window texture shared by all towers
+  const cv = document.createElement('canvas');
+  cv.width = 128; cv.height = 256;
+  const g2 = cv.getContext('2d');
+  g2.fillStyle = '#06080e'; g2.fillRect(0, 0, 128, 256);
+  const winCols = ['#ffd9a0', '#cfe4ff', '#fff2cc', '#9fd8ff'];
+  for (let y = 4; y < 252; y += 7) for (let x = 4; x < 124; x += 8) {
+    if (rnd() < 0.44) {
+      g2.fillStyle = winCols[(rnd() * 4) | 0];
+      g2.globalAlpha = 0.5 + rnd() * 0.5;
+      g2.fillRect(x, y, 5, 4); g2.globalAlpha = 1;
+    }
+  }
+  const winTex = new THREE.CanvasTexture(cv);
+  winTex.colorSpace = THREE.SRGBColorSpace;
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x0a0d16, roughness: 0.9 });
+  const winMat = new THREE.MeshBasicMaterial({ map: winTex, toneMapped: false });
+  winMat.color.setScalar(1.5); // bright -> feeds bloom
+
+  const N = 90, bodies = [], windows = [];
+  const rimIn = world.radius + 120, rimOut = world.radius + 900;
+  for (let i = 0; i < N; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = rimIn + rnd() * (rimOut - rimIn);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const w = 30 + rnd() * 46, dep = 30 + rnd() * 46, h = 80 + rnd() * 320;
+    const body = new THREE.BoxGeometry(w, h, dep);
+    body.translate(x, h / 2, z);
+    bodies.push(body);
+    for (const side of [1, -1]) {
+      const pl = new THREE.PlaneGeometry(w * 0.92, h * 0.95);
+      pl.rotateY(side > 0 ? 0 : Math.PI);
+      pl.translate(x, h / 2, z + side * (dep / 2 + 0.5));
+      windows.push(pl);
+      const pl2 = new THREE.PlaneGeometry(dep * 0.92, h * 0.95);
+      pl2.rotateY(side > 0 ? Math.PI / 2 : -Math.PI / 2);
+      pl2.translate(x + side * (w / 2 + 0.5), h / 2, z);
+      windows.push(pl2);
+    }
+  }
+  const bodyMesh = new THREE.Mesh(mergeGeometries(bodies), bodyMat);
+  const winMesh = new THREE.Mesh(mergeGeometries(windows), winMat);
+  group.add(bodyMesh, winMesh);
+  return group;
 }
 // ---------------------------------------------------------------- scenery
 function mulberry(seed) {
@@ -231,7 +318,7 @@ async function buildScenery(world) {
     for (let i = 0; i < count * 4 && n < count; i++) {
       const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      if (clearRoad && Math.abs(Math.hypot(x, z) - ROAD_R) < ROAD_HALF + clearRoad) continue;
+      if (clearRoad && roadDist(x, z) < ROAD_HALF + clearRoad) continue;
       const sc = sMin + rnd() * (sMax - sMin);
       _p.set(x, world.heightAt(x, z), z);
       _q.setFromAxisAngle(_up, rnd() * Math.PI * 2);
@@ -299,11 +386,33 @@ async function buildScenery(world) {
   silosInst.instanceMatrix.needsUpdate = true;
   group.add(silosInst);
 
-  // ---- street lamps along the ring road ----
-  // poles alternate sides; the arm reaches over the road. The glowing head is
-  // a separate emissive instanced mesh so it can switch on at night. Positions
-  // are returned so the day/night system can move a small point-light pool.
-  const N_LAMPS = 44;
+  // ---- street lamps along BOTH roads ----
+  // poles line the ring road and the straight highway; the arm reaches over
+  // the tarmac. Glowing heads are a separate emissive instanced mesh; a small
+  // point-light pool follows the nearest heads to the player at night.
+  const lampXf = [];   // { x, z, faceIn } pole transforms
+  const lampHeads = []; // world positions of each glowing head
+  // ring road: alternate inner/outer
+  const RING_N = 44;
+  for (let i = 0; i < RING_N; i++) {
+    const a = (i / RING_N) * Math.PI * 2;
+    const side = i % 2 === 0 ? 1 : -1;
+    const r = ROAD_R + side * (ROAD_HALF + 2.5);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const faceIn = side > 0 ? a + Math.PI : a;
+    lampXf.push({ x, z, faceIn });
+  }
+  // straight highway (along x at z=0): lamps every ~70 m, alternating sides
+  const halfSpan = world.radius - 130;
+  for (let x = -halfSpan, k = 0; x <= halfSpan; x += 70, k++) {
+    const side = k % 2 === 0 ? 1 : -1;
+    const z = side * (ROAD2_HALF + 2.5);
+    // arm faces toward the road centre (z=0): +z if pole is at -z, else -z
+    const faceIn = side > 0 ? Math.PI : 0;
+    lampXf.push({ x, z, faceIn });
+  }
+
+  const N_LAMPS = lampXf.length;
   const lampPoles = new THREE.InstancedMesh(lamp.geo, lamp.mat, N_LAMPS);
   lampPoles.castShadow = true;
   const headGeo = new THREE.SphereGeometry(0.2, 10, 8);
@@ -311,20 +420,14 @@ async function buildScenery(world) {
     color: 0xfff0c0, emissive: 0xffdf9e, emissiveIntensity: 0, roughness: 0.4,
   });
   const heads = new THREE.InstancedMesh(headGeo, headMat, N_LAMPS);
-  const lampHeads = [];  // world positions of each glowing head
   for (let i = 0; i < N_LAMPS; i++) {
-    const a = (i / N_LAMPS) * Math.PI * 2;
-    const side = i % 2 === 0 ? 1 : -1;          // inner/outer alternation
-    const r = ROAD_R + side * (ROAD_HALF + 2.5);
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const { x, z, faceIn } = lampXf[i];
     const gy = world.heightAt(x, z);
-    // face the arm toward the road centre (inward if outside, outward if inside)
-    const faceIn = side > 0 ? a + Math.PI : a;
     _p.set(x, gy, z); _q.setFromAxisAngle(_up, faceIn); _s.set(1, 1, 1);
     _m.compose(_p, _q, _s);
     lampPoles.setMatrixAt(i, _m);
     world.addCollider(x, z, 0.5);
-    // head world pos = pole + arm offset (local (1.2, ~5.5)) rotated by faceIn
+    // head world pos = pole + arm offset (local (1.2, ~5.42)) rotated by faceIn
     const hx = x + Math.sin(faceIn) * 1.2, hz = z + Math.cos(faceIn) * 1.2;
     const hy = gy + 5.42;
     _p.set(hx, hy, hz); _q.identity(); _s.set(1, 1, 1);
@@ -344,14 +447,17 @@ export async function buildOpenWorld(scene, renderer) {
   const world = new OpenWorld({ radius: 1500 });
   const group = new THREE.Group();
 
-  const { sky, envTex, sunDir } = buildSky(renderer, scene);
+  // fixed night scene (Singapore-style): star dome, blue city-glow horizon,
+  // moonlight fill and lit street lamps — "brightness just right".
+  const { sky, envTex } = buildNightSky(renderer, scene);
   group.add(sky);
-  if (envTex) { scene.environment = envTex; if ('environmentIntensity' in scene) scene.environmentIntensity = 0.55; }
-  scene.fog = new THREE.FogExp2(0xcdd8e6, 0.00035);
+  if (envTex) { scene.environment = envTex; if ('environmentIntensity' in scene) scene.environmentIntensity = 0.85; }
+  scene.fog = new THREE.FogExp2(0x0c1220, 0.0006);
 
-  const hemi = new THREE.HemisphereLight(0xbdd2ee, 0x5e6e52, 0.75);
+  const hemi = new THREE.HemisphereLight(0x39466b, 0x1b1e26, 0.95);
   group.add(hemi);
-  const sun = new THREE.DirectionalLight(0xfff4e2, 2.1);
+  // "sun" repurposed as the moon key light (cool, soft) so shadows still read
+  const sun = new THREE.DirectionalLight(0xc2d0f0, 0.55);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096);
   const sc = 90;
@@ -360,11 +466,13 @@ export async function buildOpenWorld(scene, renderer) {
   sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
   sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.04;
   group.add(sun, sun.target);
-  // faint moon fill for night so it's navigable, not pitch black
-  const moon = new THREE.DirectionalLight(0x9fb4e8, 0.0);
+  // faint sky-fill from the opposite side so nothing is pitch black
+  const moon = new THREE.DirectionalLight(0x9fb4e8, 0.18);
+  moon.position.set(-200, 300, -160);
   group.add(moon, moon.target);
 
   group.add(buildTerrainMesh(world));
+  group.add(buildSkyline(world));
   const scenery = await buildScenery(world);
   group.add(scenery.group);
   scene.add(group);
@@ -387,86 +495,38 @@ export async function buildOpenWorld(scene, renderer) {
     spawn: world.spawn(),
   };
 
-  // ---- day/night cycle ----
-  // tod in [0,1): 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset. One full
-  // day loops every DAY_SECONDS of real time. Start mid-morning.
-  const DAY_SECONDS = 240;
-  let tod = 0.36;
-  const _t = new THREE.Vector3(), _sd = new THREE.Vector3();
-  const dayFog = new THREE.Color(0xcdd8e6), nightFog = new THREE.Color(0x0a1020);
-  const daySun = new THREE.Color(0xfff4e2), duskSun = new THREE.Color(0xff8a3c);
-  const _fog = new THREE.Color(), _sun = new THREE.Color();
-  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  // ---- fixed night scene ----
+  // A steady, well-lit night (no day cycle). The moon key light sits high on
+  // one side; street lamps are always on; a point-light pool follows the
+  // nearest lamp heads to the player. "Brightness just right."
+  const _t = new THREE.Vector3();
+  const moonDir = new THREE.Vector3().setFromSphericalCoords(1,
+    THREE.MathUtils.degToRad(90 - 52), THREE.MathUtils.degToRad(205)).normalize();
+  if (lampHeadMat) lampHeadMat.emissiveIntensity = 5.5; // lamps lit all the time
 
-  function applyTOD(carPos) {
-    // sun elevation: sin over the day, peaks at noon (tod 0.5)
-    const ang = (tod - 0.25) * Math.PI * 2;   // 0 at sunrise, PI/2 at noon
-    const elev = Math.sin(ang);               // -1..1
-    const azi = THREE.MathUtils.degToRad(150 + tod * 40);
-    const horiz = Math.cos(ang);
-    _sd.set(horiz * Math.sin(azi), elev, horiz * Math.cos(azi)).normalize();
-
-    const day = clamp01(elev * 3.2 + 0.15);   // 0 at night, 1 in full day
-    const twilight = clamp01(1 - Math.abs(elev) * 4); // peaks at horizon
-
-    // sun light: fades out below horizon, warms near the horizon
-    sun.intensity = clamp01(elev * 2.5) * 2.1;
-    _sun.copy(daySun).lerp(duskSun, twilight * 0.8);
-    sun.color.copy(_sun);
+  function applyNight(carPos) {
     const snap = 4;
     _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
-    sun.position.copy(_t).addScaledVector(_sd, 300);
+    sun.position.copy(_t).addScaledVector(moonDir, 300);
     sun.target.position.copy(_t);
-    sun.visible = elev > -0.05;
-
-    // moon fill + hemisphere ambient
-    const night = 1 - day;
-    moon.intensity = night * 0.35;
-    moon.position.copy(_t).addScaledVector(_sd, -300); // opposite the sun
-    moon.target.position.copy(_t);
-    hemi.intensity = 0.25 + day * 0.6;
-    hemi.color.setHex(0xbdd2ee).multiplyScalar(0.5 + day * 0.5);
-    hemi.groundColor.setHex(0x5e6e52);
-
-    // sky shader sun + image-based light strength
-    if (sky.material.uniforms) {
-      sky.material.uniforms.sunPosition.value.copy(_sd);
-      sky.material.uniforms.rayleigh.value = 1.2 + day * 1.6 + twilight * 1.5;
-      sky.material.uniforms.turbidity.value = 4 + twilight * 8;
-    }
-    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.12 + day * 0.5;
-
-    // fog blends day<->night
-    _fog.copy(nightFog).lerp(dayFog, day);
-    if (scene.fog) { scene.fog.color.copy(_fog); scene.fog.density = 0.00028 + night * 0.0002; }
-
-    // street lamps: glow ramps up as it gets dark
-    const lampOn = clamp01(0.6 - elev * 2.0); // starts near dusk, full at night
-    if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 5.5; // brighter glow
-
-    // move the point-light pool to the nearest lamps around the player
-    if (lampOn > 0.02 && lampHeads.length) {
+    // point-light pool -> nearest lamp heads around the player
+    if (lampHeads.length) {
       const near = lampHeads
         .map(h => ({ h, d: (h.x - carPos.x) ** 2 + (h.z - carPos.z) ** 2 }))
         .sort((a, b) => a.d - b.d);
       for (let i = 0; i < poolLights.length; i++) {
         const src = near[i];
-        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 140; }
+        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = 140; }
         else poolLights[i].intensity = 0;
       }
-    } else {
-      for (const pl of poolLights) pl.intensity = 0;
     }
-    return { day, elev };
   }
 
   return {
     world, group, sun, hemi,
     landmarks: scenery.landmarks, gasStations: scenery.gasStations,
-    get timeOfDay() { return tod; },
     update(dt, carPos) {
-      tod = (tod + dt / DAY_SECONDS) % 1;
-      applyTOD(carPos);
+      applyNight(carPos);
     },
     dispose() {
       scene.remove(group);

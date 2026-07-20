@@ -295,12 +295,19 @@ async function buildOpenWorldGame(teamId) {
   const team = TEAMS[teamId] || TEAMS.redbull;
   const loadMsg = document.getElementById('loading-msg');
   const scene = new THREE.Scene();
-  renderer.toneMappingExposure = 0.6;
+  renderer.toneMappingExposure = 1.0; // night exposure (matches Singapore)
 
   if (loadMsg) loadMsg.textContent = '正在生成开放世界地形与模型…';
   await new Promise(r => setTimeout(r, 16));
   const env = await buildOpenWorld(scene, renderer);
   const world = env.world;
+
+  // bloom composer so lamps, windows and emissives glow (the Singapore look)
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.6, 0.7));
+  composer.addPass(new OutputPass());
+  composer.setSize(window.innerWidth, window.innerHeight);
 
   if (loadMsg) loadMsg.textContent = '正在打造你的赛车…';
   const car = await buildCarInstance(team, PLAYER_LOD, (f, label) => {
@@ -374,8 +381,8 @@ async function buildOpenWorldGame(teamId) {
 
   G = {
     scene, track: null, env, car, physics, entries, rig, particles, skids, race,
-    cfg: { flag: '🗺', name: '开放世界', fullName: 'Open World', corners: [], sky: { type: 'day' } },
-    team, composer: null, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
+    cfg: { flag: '🗺', name: '开放世界', fullName: 'Open World', corners: [], sky: { type: 'night' } },
+    team, composer, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
     onfoot, world, onFootActive: false,
   };
   window.__game = G;
