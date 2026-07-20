@@ -531,7 +531,7 @@ function tick(dt, render = true) {
       const ax = input.footAxes();
       const yaw = G.rig.lookYaw || 0;
       const fX = Math.sin(yaw), fZ = Math.cos(yaw);   // camera forward
-      const rX = Math.cos(yaw), rZ = -Math.sin(yaw);  // camera right
+      const rX = -Math.cos(yaw), rZ = Math.sin(yaw);  // camera right (D = right)
       G.onfoot.step(dt, {
         dirX: fX * ax.fwd + rX * ax.strafe,
         dirZ: fZ * ax.fwd + rZ * ax.strafe,
