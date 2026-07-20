@@ -185,43 +185,56 @@ function buildTerrainMesh(world) {
   return mesh;
 }
 
-// A night sky dome: deep-blue gradient, a warm city glow at the horizon and a
-// scatter of twinkling stars — matching the Singapore night look the player
-// likes. Self-lit (BasicMaterial via shader), unaffected by scene lights.
-function buildNightSky(renderer, scene) {
+// Combined sky for a day/night cycle:
+//  - daySky : three.js atmospheric Sky (drives daytime look + sun position)
+//  - nightDome : deep-blue star dome with a warm horizon city-glow; fades in
+//    at night via a uNight uniform (0 = clear/transparent, 1 = full night).
+// Both env maps are baked once (day + night) so IBL can be blended cheaply.
+function buildSkySystem(renderer, scene) {
+  // daytime atmospheric sky
+  const daySky = new Sky();
+  daySky.scale.setScalar(4000);
+  const u = daySky.material.uniforms;
+  u.turbidity.value = 6; u.rayleigh.value = 2.4;
+  u.mieCoefficient.value = 0.005; u.mieDirectionalG.value = 0.8;
+
+  // night dome (transparent until night)
   const geo = new THREE.SphereGeometry(3600, 40, 24);
-  const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide, depthWrite: false, fog: false,
+  const nightMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, transparent: true, fog: false,
+    uniforms: { uNight: { value: 0 } },
     vertexShader: `varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: `
-      varying vec3 vDir;
+      varying vec3 vDir; uniform float uNight;
       float hash(vec3 p){ p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
       void main(){
         vec3 d = normalize(vDir);
         float h = clamp(d.y, -0.05, 1.0);
-        // deep blue zenith -> lighter near horizon
         vec3 col = mix(vec3(0.10, 0.14, 0.24), vec3(0.02, 0.03, 0.07), pow(clamp(h,0.0,1.0), 0.45));
-        // warm amber city glow hugging the horizon
         float glow = smoothstep(0.16, -0.02, d.y);
         col = mix(col, vec3(0.22, 0.17, 0.13), glow * 0.75);
-        // stars in the upper sky
         vec3 sp = floor(d * 230.0);
         float star = step(0.9975, hash(sp));
         float tw = 0.55 + 0.45 * hash(sp + 3.0);
         col += vec3(0.9, 0.95, 1.0) * star * tw * smoothstep(0.06, 0.3, d.y);
-        gl_FragColor = vec4(col, 1.0);
+        gl_FragColor = vec4(col, uNight);
       }`,
   });
-  const sky = new THREE.Mesh(geo, mat);
-  sky.renderOrder = -10;
-  let envTex = null;
+  const nightDome = new THREE.Mesh(geo, nightMat);
+  nightDome.renderOrder = -9; // in front of daySky
+
+  // bake both env maps once
+  let envDay = null, envNight = null;
   if (renderer) {
     const pmrem = new THREE.PMREMGenerator(renderer);
-    const tmp = new THREE.Scene(); tmp.add(sky);
-    envTex = pmrem.fromScene(tmp, 0.06).texture;
-    tmp.remove(sky); pmrem.dispose();
+    u.sunPosition.value.setFromSphericalCoords(1, THREE.MathUtils.degToRad(40), THREE.MathUtils.degToRad(150));
+    const t1 = new THREE.Scene(); t1.add(daySky); envDay = pmrem.fromScene(t1, 0.06).texture; t1.remove(daySky);
+    nightMat.uniforms.uNight.value = 1;
+    const t2 = new THREE.Scene(); t2.add(nightDome); envNight = pmrem.fromScene(t2, 0.06).texture; t2.remove(nightDome);
+    nightMat.uniforms.uNight.value = 0;
+    pmrem.dispose();
   }
-  return { sky, envTex };
+  return { daySky, nightDome, nightMat, envDay, envNight };
 }
 
 // A distant ring of skyscrapers with lit windows, just past the world rim, to
@@ -447,17 +460,15 @@ export async function buildOpenWorld(scene, renderer) {
   const world = new OpenWorld({ radius: 1500 });
   const group = new THREE.Group();
 
-  // fixed night scene (Singapore-style): star dome, blue city-glow horizon,
-  // moonlight fill and lit street lamps — "brightness just right".
-  const { sky, envTex } = buildNightSky(renderer, scene);
-  group.add(sky);
-  if (envTex) { scene.environment = envTex; if ('environmentIntensity' in scene) scene.environmentIntensity = 0.85; }
-  scene.fog = new THREE.FogExp2(0x0c1220, 0.0006);
+  // day sky + night dome (night fades in via a uniform); both env maps baked
+  const { daySky, nightDome, nightMat, envDay, envNight } = buildSkySystem(renderer, scene);
+  group.add(daySky, nightDome);
+  if (envDay) scene.environment = envDay;
+  scene.fog = new THREE.FogExp2(0xcdd8e6, 0.00035);
 
-  const hemi = new THREE.HemisphereLight(0x39466b, 0x1b1e26, 0.95);
+  const hemi = new THREE.HemisphereLight(0xbdd2ee, 0x5e6e52, 0.75);
   group.add(hemi);
-  // "sun" repurposed as the moon key light (cool, soft) so shadows still read
-  const sun = new THREE.DirectionalLight(0xc2d0f0, 0.55);
+  const sun = new THREE.DirectionalLight(0xfff4e2, 2.1);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096);
   const sc = 90;
@@ -466,10 +477,6 @@ export async function buildOpenWorld(scene, renderer) {
   sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
   sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.04;
   group.add(sun, sun.target);
-  // faint sky-fill from the opposite side so nothing is pitch black
-  const moon = new THREE.DirectionalLight(0x9fb4e8, 0.18);
-  moon.position.set(-200, 300, -160);
-  group.add(moon, moon.target);
 
   group.add(buildTerrainMesh(world));
   group.add(buildSkyline(world));
@@ -477,8 +484,7 @@ export async function buildOpenWorld(scene, renderer) {
   group.add(scenery.group);
   scene.add(group);
 
-  // pool of point lights that hop to the nearest lamps around the player at
-  // night (cheaper than a light per lamp)
+  // pool of point lights that hop to the nearest lamps around the player (night)
   const POOL = 8;
   const poolLights = [];
   for (let i = 0; i < POOL; i++) {
@@ -488,45 +494,78 @@ export async function buildOpenWorld(scene, renderer) {
   const lampHeads = scenery.lampHeads || [];
   const lampHeadMat = scenery.lampHeadMat;
 
-  // map metadata for the minimap: ring road + points of interest
   world.mapData = {
     radius: world.radius, roadR: ROAD_R,
     landmarks: scenery.landmarks, gasStations: scenery.gasStations,
     spawn: world.spawn(),
   };
 
-  // ---- fixed night scene ----
-  // A steady, well-lit night (no day cycle). The moon key light sits high on
-  // one side; street lamps are always on; a point-light pool follows the
-  // nearest lamp heads to the player. "Brightness just right."
-  const _t = new THREE.Vector3();
-  const moonDir = new THREE.Vector3().setFromSphericalCoords(1,
-    THREE.MathUtils.degToRad(90 - 52), THREE.MathUtils.degToRad(205)).normalize();
-  if (lampHeadMat) lampHeadMat.emissiveIntensity = 5.5; // lamps lit all the time
+  // ---- day/night cycle ----
+  // tod in [0,1): 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset. Loops every
+  // DAY_SECONDS. Normal day; the pretty night fades in for the dark hours.
+  const DAY_SECONDS = 240;
+  let tod = 0.30;                       // start mid-morning
+  const _t = new THREE.Vector3(), _sd = new THREE.Vector3();
+  const dayFog = new THREE.Color(0xcdd8e6), nightFog = new THREE.Color(0x0c1220);
+  const _fog = new THREE.Color();
+  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
 
-  function applyNight(carPos) {
+  function applyTOD(carPos) {
+    const ang = (tod - 0.25) * Math.PI * 2;   // 0 at sunrise, PI/2 at noon
+    const elev = Math.sin(ang);               // -1..1 sun height
+    const azi = THREE.MathUtils.degToRad(150 + tod * 40);
+    const horiz = Math.cos(ang);
+    _sd.set(horiz * Math.sin(azi), Math.max(elev, 0.02), horiz * Math.cos(azi)).normalize();
+
+    const day = clamp01(elev * 3.0 + 0.12);   // ~0 at night, 1 in full day
+    const night = 1 - day;
+
+    // sun light (fades below horizon)
+    sun.intensity = clamp01(elev * 2.6) * 2.1;
+    sun.visible = elev > -0.02;
     const snap = 4;
     _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
-    sun.position.copy(_t).addScaledVector(moonDir, 300);
+    sun.position.copy(_t).addScaledVector(_sd, 300);
     sun.target.position.copy(_t);
-    // point-light pool -> nearest lamp heads around the player
-    if (lampHeads.length) {
+
+    // ambient + sky
+    hemi.intensity = 0.28 + day * 0.55;
+    if (daySky.material.uniforms) daySky.material.uniforms.sunPosition.value.copy(_sd);
+    nightMat.uniforms.uNight.value = night;   // stars/glow fade in at night
+    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.35 + day * 0.5;
+    if (scene.environment !== (day > 0.5 ? envDay : envNight)) {
+      scene.environment = day > 0.5 ? envDay : envNight;
+    }
+
+    // fog + exposure
+    _fog.copy(nightFog).lerp(dayFog, day);
+    if (scene.fog) { scene.fog.color.copy(_fog); scene.fog.density = 0.00035 + night * 0.00028; }
+    if (renderer) renderer.toneMappingExposure = 0.64 + night * 0.4;
+
+    // street lamps glow from dusk; pool lights follow nearest heads
+    const lampOn = clamp01(0.55 - elev * 2.2);
+    if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 5.5;
+    if (lampOn > 0.02 && lampHeads.length) {
       const near = lampHeads
         .map(h => ({ h, d: (h.x - carPos.x) ** 2 + (h.z - carPos.z) ** 2 }))
         .sort((a, b) => a.d - b.d);
       for (let i = 0; i < poolLights.length; i++) {
         const src = near[i];
-        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = 140; }
+        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 140; }
         else poolLights[i].intensity = 0;
       }
+    } else {
+      for (const pl of poolLights) pl.intensity = 0;
     }
   }
 
   return {
     world, group, sun, hemi,
     landmarks: scenery.landmarks, gasStations: scenery.gasStations,
+    get timeOfDay() { return tod; },
     update(dt, carPos) {
-      applyNight(carPos);
+      tod = (tod + dt / DAY_SECONDS) % 1;
+      applyTOD(carPos);
     },
     dispose() {
       scene.remove(group);
@@ -535,7 +574,7 @@ export async function buildOpenWorld(scene, renderer) {
         if (o.geometry) o.geometry.dispose();
         if (o.material) { const m = Array.isArray(o.material) ? o.material : [o.material]; m.forEach(x => x.dispose()); }
       });
-      if (envTex) envTex.dispose();
+      if (envDay) envDay.dispose(); if (envNight) envNight.dispose();
     },
   };
 }
