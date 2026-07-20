@@ -206,10 +206,10 @@ export class Hud {
       ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.arc(mapX(lm.x), mapZ(lm.z), 3.4, 0, 7); ctx.fill(); ctx.stroke();
     }
-    // player: arrow pointing along heading
+    // player: arrow pointing along heading (look direction when on foot)
     const onFoot = !!(state.onFootActive);
     const pos = onFoot ? state.onfoot.pos : state.physics.pos;
-    const heading = onFoot ? state.onfoot.heading : state.physics.heading;
+    const heading = onFoot ? (state.rig?.lookYaw ?? state.onfoot.heading) : state.physics.heading;
     const px = mapX(pos.x), pz = mapZ(pos.z);
     ctx.save();
     ctx.translate(px, pz);

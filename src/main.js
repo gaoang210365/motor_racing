@@ -145,7 +145,8 @@ function toggleOnFoot() {
     p.vx = p.vy = p.yawRate = 0;
     G.onFootActive = true;
     G.rig.setFootTarget(foot);
-    hud.message('🚶 下车步行 · 按 F 上车<br><span class="en">ON FOOT · F to enter</span>', 2200);
+    input.lockPointer(); // hide cursor, capture mouse for look
+    hud.message('🚶 下车步行 · 鼠标转向 · WASD 移动 · C 视角 · F 上车<br><span class="en">ON FOOT · mouse to look</span>', 2600);
   } else {
     // must be near the car to get back in
     const d = Math.hypot(foot.pos.x - p.pos.x, foot.pos.z - p.pos.z);
@@ -153,6 +154,7 @@ function toggleOnFoot() {
     foot.group.visible = false;
     G.onFootActive = false;
     G.rig.setFootTarget(null);
+    input.unlockPointer();
     hud.message('🏎 已上车<br><span class="en">BACK IN THE CAR</span>', 1600);
   }
 }
@@ -523,12 +525,13 @@ function tick(dt, render = true) {
   if (G && !paused) {
     input.update(dt);
     if (G.onFootActive) {
-      // walk the character with camera-relative WASD -> a world move direction.
-      // camera forward = (sin,cos)(orbitYaw); right = (cos,-sin)(orbitYaw).
+      // mouse controls the look direction; WASD only walks (relative to it)
+      const md = input.takeMouse();
+      if (md.dx || md.dy) G.rig.applyMouseLook(md.dx, md.dy);
       const ax = input.footAxes();
-      const yaw = G.rig.orbitYaw || 0;
-      const fX = Math.sin(yaw), fZ = Math.cos(yaw);
-      const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
+      const yaw = G.rig.lookYaw || 0;
+      const fX = Math.sin(yaw), fZ = Math.cos(yaw);   // camera forward
+      const rX = Math.cos(yaw), rZ = -Math.sin(yaw);  // camera right
       G.onfoot.step(dt, {
         dirX: fX * ax.fwd + rX * ax.strafe,
         dirZ: fZ * ax.fwd + rZ * ax.strafe,
@@ -573,6 +576,11 @@ window.addEventListener('resize', () => {
   garage.resize(window.innerWidth, window.innerHeight);
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && G && !paused) setPaused(true); });
+
+// re-capture the mouse for look when walking (e.g. after Esc released it)
+renderer.domElement.addEventListener('click', () => {
+  if (G && G.onFootActive && !paused && !input.pointerLocked) input.lockPointer();
+});
 
 setupMenu();
 frame();

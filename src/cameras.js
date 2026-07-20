@@ -33,7 +33,18 @@ export class CameraRig {
   // when set, the rig follows an on-foot character instead of the car
   setFootTarget(foot) {
     this.foot = foot;
-    if (foot) { this.orbitYaw = foot.heading; this.footView = this.footView || 'third'; }
+    if (foot) {
+      this.lookYaw = foot.heading;   // mouse-controlled look direction
+      this.lookPitch = 0;
+      this.footView = this.footView || 'third';
+    }
+  }
+
+  // mouse-look: dx/dy are raw pointer deltas (pixels)
+  applyMouseLook(dx, dy) {
+    const sens = 0.0022;
+    this.lookYaw = (this.lookYaw ?? 0) - dx * sens;   // right drag -> turn right
+    this.lookPitch = THREE.MathUtils.clamp((this.lookPitch ?? 0) - dy * sens, -0.85, 0.6);
   }
 
   // cycle first/third person while on foot; returns a label
@@ -87,32 +98,38 @@ export class CameraRig {
   }
 
   update(dt) {
-    // on-foot camera: first-person (eyes) or third-person chase behind the
-    // character. orbitYaw eases toward the walker's facing; the character
-    // model faces +z at heading 0, so 'forward' = (sin,cos)(orbitYaw).
+    // on-foot camera: mouse-controlled look (lookYaw/lookPitch); WASD never
+    // rotates the view. First-person = eyes; third-person = chase orbiting the
+    // character. Forward = (sin,cos)(lookYaw); pitch tilts up/down.
     if (this.foot) {
       const f = this.foot;
-      this.orbitYaw = this.orbitYaw ?? f.heading;
-      let d = f.heading - this.orbitYaw;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      this.orbitYaw += d * Math.min(1, dt * 6);
-      const dirX = Math.sin(this.orbitYaw), dirZ = Math.cos(this.orbitYaw);
+      const yaw = this.lookYaw ?? 0, pitch = this.lookPitch ?? 0;
+      const dirX = Math.sin(yaw), dirZ = Math.cos(yaw);
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
       if (this.footView === 'first') {
-        // eyes just above the helmet, looking forward
-        _target.set(f.pos.x + dirX * 0.18, f.pos.y + 1.68, f.pos.z + dirZ * 0.18);
-        this.pos.copy(_target); // rigid, no lag in FP
-        _lookT.set(f.pos.x + dirX * 30, f.pos.y + 1.62, f.pos.z + dirZ * 30);
+        // eyes just above the helmet; aim ray uses yaw + pitch
+        _target.set(f.pos.x + dirX * 0.16, f.pos.y + 1.66, f.pos.z + dirZ * 0.16);
+        this.pos.copy(_target);
+        _lookT.set(
+          f.pos.x + dirX * cp * 30,
+          f.pos.y + 1.66 + sp * 30,
+          f.pos.z + dirZ * cp * 30
+        );
         this.look.copy(_lookT);
         this.fov = damp(this.fov, 74, 6, dt);
       } else {
-        // third-person: behind + above, looking at the character's upper body
-        _target.set(f.pos.x - dirX * 5.2, f.pos.y + 2.9, f.pos.z - dirZ * 5.2);
-        const lam = 8;
+        // third-person: boom sits behind along -look, raised by pitch
+        const dist = 5.2, height = 2.6;
+        _target.set(
+          f.pos.x - dirX * cp * dist,
+          f.pos.y + height - sp * dist,
+          f.pos.z - dirZ * cp * dist
+        );
+        const lam = 10;
         this.pos.x = damp(this.pos.x, _target.x, lam, dt);
         this.pos.y = damp(this.pos.y, _target.y, lam, dt);
         this.pos.z = damp(this.pos.z, _target.z, lam, dt);
-        _lookT.set(f.pos.x + dirX * 2.5, f.pos.y + 1.35, f.pos.z + dirZ * 2.5);
+        _lookT.set(f.pos.x + dirX * 2.0, f.pos.y + 1.35, f.pos.z + dirZ * 2.0);
         this.look.x = damp(this.look.x, _lookT.x, lam * 1.4, dt);
         this.look.y = damp(this.look.y, _lookT.y, lam * 1.4, dt);
         this.look.z = damp(this.look.z, _lookT.z, lam * 1.4, dt);

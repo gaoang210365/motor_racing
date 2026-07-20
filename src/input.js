@@ -21,6 +21,33 @@ export class Input {
     });
     window.addEventListener('keyup', e => this.keys.delete(e.key.toLowerCase()));
     window.addEventListener('blur', () => this.keys.clear());
+
+    // ---- mouse-look (pointer lock) for on-foot FPS control ----
+    this.mouseDX = 0; this.mouseDY = 0;
+    this.pointerLocked = false;
+    window.addEventListener('mousemove', e => {
+      if (!this.pointerLocked) return;
+      this.mouseDX += e.movementX || 0;
+      this.mouseDY += e.movementY || 0;
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this.pointerLocked = document.pointerLockElement != null;
+      if (!this.pointerLocked) this.events.push('pointerunlock');
+    });
+  }
+
+  lockPointer() {
+    const el = document.getElementById('app') || document.body;
+    if (el.requestPointerLock) el.requestPointerLock();
+  }
+  unlockPointer() {
+    if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
+  }
+  // consume accumulated mouse delta since last call
+  takeMouse() {
+    const d = { dx: this.mouseDX, dy: this.mouseDY };
+    this.mouseDX = 0; this.mouseDY = 0;
+    return d;
   }
 
   takeEvents() { const ev = this.events; this.events = []; return ev; }
