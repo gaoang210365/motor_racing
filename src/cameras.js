@@ -43,13 +43,13 @@ export class CameraRig {
   }
 
   buildTvPods() {
-    this.pods = tvPodSpots(this.track);
+    this.pods = this.track ? tvPodSpots(this.track) : [];
   }
 
   snap() {
     const p = this.physics;
     const F = p.forward(_f);
-    if (this.mode === 'tv' && this.pods && this.pods.length) {
+    if (this.mode === 'tv' && this.track && this.pods && this.pods.length) {
       const L = this.track.length;
       const s = p.info ? p.info.s : 0;
       let best = 0, bestAhead = Infinity;
@@ -83,7 +83,7 @@ export class CameraRig {
     this.shakeT += dt * (14 + spd * 0.5);
     const mode = this.mode;
 
-    if (mode === 'tv') {
+    if (mode === 'tv' && this.track && this.pods && this.pods.length) {
       // hold the current pod while the car is in its window, else hand off
       // to the pod the car is approaching
       const L = this.track.length;
@@ -147,7 +147,7 @@ export class CameraRig {
       this.pos.copy(_target);
       // look ahead along the track for natural cornering view
       const ahead = 16 + spd * 0.32;
-      const q = p.info;
+      const q = this.track ? p.info : null;
       if (q) {
         const sm = this.track.sampleAt(q.s + ahead);
         _lookT.copy(sm.p).add(_u.set(0, mode === 'cockpit' ? 0.75 : 0.9, 0));

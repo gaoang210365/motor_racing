@@ -132,7 +132,7 @@ export class Hud {
     // corner callout
     const frac = p.info ? p.info.frac : 0;
     let corner = null;
-    for (const c of this.cfg.corners) {
+    for (const c of (this.cfg ? this.cfg.corners : [])) {
       const d = ((frac - c.f) % 1 + 1) % 1;
       if (d < 0.017 || d > 0.997) { corner = c; break; }
       const before = ((c.f - frac) % 1 + 1) % 1;
@@ -154,7 +154,7 @@ export class Hud {
     // minimap: every car in its team colour, player on top in yellow
     const ctx = this.mapCtx;
     ctx.clearRect(0, 0, this.el.minimap.width, this.el.minimap.height);
-    ctx.drawImage(this.mapBase, 0, 0);
+    if (this.mapBase) ctx.drawImage(this.mapBase, 0, 0);
     if (this.mapFn) {
       for (const e of race.entries) {
         if (e.isPlayer) continue;

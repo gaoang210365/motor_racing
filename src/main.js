@@ -8,6 +8,7 @@ import { TRACKS, TRACK_ORDER } from './config.js';
 import { CIRCUITS } from './data/circuits.js';
 import { Track } from './track.js';
 import { buildEnvironment, groundHeightAt } from './environment.js';
+import { buildOpenWorld } from './openworld.js';
 import { buildSculptedCar, buildCarInstance, clearCarCache } from './carSculpt.js';
 import { TEAMS, TEAM_ORDER, loadSelectedTeam } from './teams.js';
 import { CarPhysics } from './physics.js';
@@ -37,7 +38,7 @@ const hud = new Hud();
 let G = null; // current game session
 let selTrack = TRACK_ORDER[0];
 let selTeam = loadSelectedTeam();
-let selMode = ['race', 'roam'].includes(localStorage.getItem('voxelf1-mode'))
+let selMode = ['race', 'roam', 'explore'].includes(localStorage.getItem('voxelf1-mode'))
   ? localStorage.getItem('voxelf1-mode') : 'time';
 let paused = false;
 const RACE_LOD = 0.022;      // AI cars in a full 10-car race (keeps FPS up)
@@ -90,10 +91,12 @@ function setupMenu() {
     document.querySelectorAll('.mode-chip').forEach(c => c.classList.toggle('on', c.dataset.mode === selMode));
     const btn = document.getElementById('btn-start');
     if (btn) btn.textContent = selMode === 'race' ? `发车 · ${RACE_LAPS} 圈正赛`
-      : selMode === 'roam' ? '开始探索 · FREE ROAM' : '进入赛道 · LIGHTS OUT';
+      : selMode === 'roam' ? '开始探索 · FREE ROAM'
+      : selMode === 'explore' ? '进入开放世界 · OPEN WORLD'
+      : '进入赛道 · LIGHTS OUT';
   };
   document.querySelectorAll('.mode-chip').forEach(c => c.addEventListener('click', () => {
-    selMode = ['race', 'roam'].includes(c.dataset.mode) ? c.dataset.mode : 'time';
+    selMode = ['race', 'roam', 'explore'].includes(c.dataset.mode) ? c.dataset.mode : 'time';
     localStorage.setItem('voxelf1-mode', selMode);
     refreshMode();
   }));
@@ -131,10 +134,9 @@ function setPaused(v) {
 // ------------------------------------------------------------ game session
 function disposeGame() {
   if (!G) return;
-  G.race.cancelTimers();
+  if (G.race) G.race.cancelTimers();
   G.env.dispose();
-  G.track.dispose();
-  G.scene.remove(G.track.group);
+  if (G.track) { G.track.dispose(); G.scene.remove(G.track.group); }
   G.particles.dispose(G.scene);
   G.skids.dispose(G.scene);
   clearCarCache(); // cloned car geometries are disposed with the scene
@@ -153,7 +155,8 @@ async function startGame(trackId, teamId) {
   try {
     await new Promise(r => setTimeout(r, 30));
     disposeGame();
-    await buildGame(trackId, teamId);
+    if (selMode === 'explore') await buildOpenWorldGame(teamId);
+    else await buildGame(trackId, teamId);
     hud.show('loading', false);
     hud.show('hud', true);
     G.race.start();
@@ -253,6 +256,69 @@ async function buildGame(trackId, teamId) {
   G = {
     scene, track, env, car, physics, entries, rig, particles, skids, race, cfg, team, composer,
     accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
+  };
+  window.__game = G;
+}
+
+// ------------------------------------------------------------ open-world session
+// A minimal session with no Race object: one player car free-driving on a
+// procedural terrain. `race` is a tiny shim so the shared game loop + HUD work.
+async function buildOpenWorldGame(teamId) {
+  const team = TEAMS[teamId] || TEAMS.redbull;
+  const loadMsg = document.getElementById('loading-msg');
+  const scene = new THREE.Scene();
+  renderer.toneMappingExposure = 0.6;
+
+  if (loadMsg) loadMsg.textContent = '正在生成开放世界地形…';
+  await new Promise(r => setTimeout(r, 16));
+  const env = buildOpenWorld(scene, renderer);
+  const world = env.world;
+
+  if (loadMsg) loadMsg.textContent = '正在打造你的赛车…';
+  const car = await buildCarInstance(team, PLAYER_LOD, (f, label) => {
+    if (loadMsg && label) loadMsg.textContent = label;
+  }, 'race');
+  car.group.rotation.order = 'YXZ';
+  scene.add(car.group);
+
+  const physics = new CarPhysics(null);
+  physics.world = world;
+  const sp = world.spawn();
+  physics.placeAtWorld(sp.x, sp.z, sp.heading);
+  physics.locked = false;
+
+  const playerEntry = {
+    physics, car, team, isPlayer: true, skill: 1, bias: 0,
+    name: `${team.short} #${team.number} · 你`, short: team.short, roll: 0, dive: 0,
+  };
+  const entries = [playerEntry];
+
+  const rig = new CameraRig(camera, car, physics, null);
+  const particles = new Particles(scene);
+  const skids = new SkidMarks(scene);
+
+  // race shim: satisfies the game loop + HUD without laps/AI
+  const race = {
+    mode: 'explore', state: 'racing', autopilotActive: false,
+    entries, player: playerEntry,
+    lapCount: 1, lastLapMs: null, currentLapMs: 0, bestLapMs: null, playerPos: 1,
+    wrongWay: false,
+    start() { hud.message('🗺 开放世界 · 自由驾驶,尽情探索<br><span class="en">OPEN WORLD</span>', 2600, 'go'); },
+    cancelTimers() {}, reset() {
+      const s = world.spawn(); physics.placeAtWorld(s.x, s.z, s.heading);
+      hud.message('已回到出发点', 1400);
+    },
+    inputFor(e, userInput) { return userInput; },
+    resolveCollisions() {}, update() {}, gaps() { return null; },
+  };
+
+  hud.setMode('explore', 0);
+  hud.setCameraLabel(CAMERA_MODES[0].label);
+
+  G = {
+    scene, track: null, env, car, physics, entries, rig, particles, skids, race,
+    cfg: { flag: '🗺', name: '开放世界', fullName: 'Open World', corners: [], sky: { type: 'day' } },
+    team, composer: null, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
   };
   window.__game = G;
 }

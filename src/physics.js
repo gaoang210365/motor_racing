@@ -63,6 +63,19 @@ export class CarPhysics {
     this.reversing = false;   // true while actively backing up
     this.freeRoam = false;    // roam mode: soft boundaries + terrain follow
     this.groundYFn = null;     // (pos, sm, side, dist) => y, provided in roam
+    this.world = null;         // open-world terrain provider (heightAt/normalAt/...)
+  }
+
+  // Drop the car onto the open-world terrain at (x,z), facing +heading.
+  placeAtWorld(x, z, heading = 0) {
+    this.pos.set(x, this.world ? this.world.heightAt(x, z) : 0, z);
+    this.heading = heading;
+    this.vx = this.vy = this.yawRate = 0;
+    this.steer = this.steerTarget = 0;
+    this.gear = 1; this.rpm = 0.35;
+    this.groundY = this.pos.y;
+    this.info = { _own: true, lat: 0, s: 0, frac: 0, idx: 0,
+      t: this.forward(new THREE.Vector3()), n: new THREE.Vector3(1, 0, 0), dyds: 0 };
   }
 
   // track.query() reuses a shared scratch object — every car keeps its OWN
@@ -93,18 +106,32 @@ export class CarPhysics {
   left(out = new THREE.Vector3()) { return out.set(Math.cos(this.heading), 0, -Math.sin(this.heading)); }
 
   step(dt, input) {
-    const q = this._snapshotInfo(this.track.query(this.pos, this.lastIdx));
-    this.lastIdx = q.idx;
+    // Open-world mode drives on a terrain heightfield instead of a track.
+    // `q` is left as a lightweight stand-in; the track-specific reads below
+    // (surface / slope / walls / ground) branch on `this.world`.
+    let q;
+    if (this.world) {
+      q = this.info || (this.info = { _own: true });
+      q.t = this.forward(_ft); q.dyds = 0; q.idx = 0; q.s = 0; q.frac = 0;
+    } else {
+      q = this._snapshotInfo(this.track.query(this.pos, this.lastIdx));
+      this.lastIdx = q.idx;
+    }
     this.wallHit = 0;
 
     // ---- surface ----
-    const w2 = this.track.width / 2;
-    const absLat = Math.abs(q.lat);
-    let surface = 'road';
-    if (absLat > w2 - 0.1) {
-      const kerb = q.lat > 0 ? q.kerbL : q.kerbR;
-      if (kerb && absLat < w2 + 1.45) surface = 'kerb';
-      else if (absLat > w2 + 0.15) surface = 'grass';
+    let surface;
+    if (this.world) {
+      surface = this.world.surfaceAt(this.pos.x, this.pos.z);
+    } else {
+      const w2 = this.track.width / 2;
+      const absLat = Math.abs(q.lat);
+      surface = 'road';
+      if (absLat > w2 - 0.1) {
+        const kerb = q.lat > 0 ? q.kerbL : q.kerbR;
+        if (kerb && absLat < w2 + 1.45) surface = 'kerb';
+        else if (absLat > w2 + 0.15) surface = 'grass';
+      }
     }
     this.surface = surface;
     const surf = SURFACES[surface];
@@ -193,7 +220,16 @@ export class CarPhysics {
       + CAR.rolling * Math.sign(this.vx)
       + surf.drag * this.vx * (surface === 'road' ? 0 : 1);
     const fwd = this.forward(_f);
-    const slopeF = CAR.mass * G * fwd.dot(q.t) * q.dyds; // uphill resists
+    let slopeF;
+    if (this.world) {
+      // grade along travel from the terrain normal: dy/dfwd = -(n·fwd_h)/n.y.
+      // positive grade (uphill) => positive slopeF => resists in the integrator
+      const n = this.world.normalAt(this.pos.x, this.pos.z, _wn);
+      const grade = -(fwd.x * n.x + fwd.z * n.z) / Math.max(n.y, 0.2);
+      slopeF = CAR.mass * G * THREE.MathUtils.clamp(grade, -0.7, 0.7);
+    } else {
+      slopeF = CAR.mass * G * fwd.dot(q.t) * q.dyds; // uphill resists
+    }
 
     // ---- integrate (body frame) ----
     const ax = (Fdrive - Fbrake - dragF - slopeF - FyF * Math.sin(this.steer)) / CAR.mass + this.vy * this.yawRate;
@@ -225,50 +261,86 @@ export class CarPhysics {
     const F = this.forward(_f), Lf = this.left(_l);
     this.pos.addScaledVector(F, this.vx * dt).addScaledVector(Lf, this.vy * dt);
 
-    // ---- walls ----
-    const q2 = this.track.query(this.pos, this.lastIdx);
-    this.lastIdx = q2.idx;
-    if (this.freeRoam) {
-      this._roamBounds(q2);
+    // ---- boundaries + ground follow ----
+    let q2;
+    if (this.world) {
+      this._worldBounds();
+      // sit on the terrain and pitch/roll to its normal
+      const gy = this.world.heightAt(this.pos.x, this.pos.z);
+      this.groundY = THREE.MathUtils.damp(this.groundY, gy, 22, dt);
+      this.pos.y = this.groundY;
+      const n = this.world.normalAt(this.pos.x, this.pos.z, _wn);
+      const Lf2 = this.left(_l);
+      this.groundPitch = -Math.atan2(F.x * n.x + F.z * n.z, Math.max(n.y, 0.2));
+      this.groundRoll = Math.atan2(Lf2.x * n.x + Lf2.z * n.z, Math.max(n.y, 0.2));
+      q2 = q;
     } else {
-    const margin = 0.95;
-    for (const side of [1, -1]) {
-      const wall = side > 0 ? q2.wallL : q2.wallR;
-      const lat = q2.lat * side;
-      if (lat > wall - margin) {
-        this.pos.addScaledVector(q2.n, -(lat - (wall - margin)) * side);
-        const vWorld = _v.copy(F).multiplyScalar(this.vx).addScaledVector(Lf, this.vy);
-        const vn = vWorld.dot(q2.n) * side;
-        if (vn > 0) {
-          this.wallHit = Math.max(this.wallHit, vn);
-          vWorld.addScaledVector(q2.n, -vn * 1.3 * side);
-          vWorld.multiplyScalar(Math.max(0.86, 1 - vn * 0.012));
-          this.vx = vWorld.dot(F);
-          this.vy = vWorld.dot(Lf);
-          // scrub some yaw so the car doesn't pinball
-          this.yawRate *= 0.6;
+      // ---- walls ----
+      q2 = this.track.query(this.pos, this.lastIdx);
+      this.lastIdx = q2.idx;
+      if (this.freeRoam) {
+        this._roamBounds(q2);
+      } else {
+        const margin = 0.95;
+        for (const side of [1, -1]) {
+          const wall = side > 0 ? q2.wallL : q2.wallR;
+          const lat = q2.lat * side;
+          if (lat > wall - margin) {
+            this.pos.addScaledVector(q2.n, -(lat - (wall - margin)) * side);
+            const vWorld = _v.copy(F).multiplyScalar(this.vx).addScaledVector(Lf, this.vy);
+            const vn = vWorld.dot(q2.n) * side;
+            if (vn > 0) {
+              this.wallHit = Math.max(this.wallHit, vn);
+              vWorld.addScaledVector(q2.n, -vn * 1.3 * side);
+              vWorld.multiplyScalar(Math.max(0.86, 1 - vn * 0.012));
+              this.vx = vWorld.dot(F);
+              this.vy = vWorld.dot(Lf);
+              // scrub some yaw so the car doesn't pinball
+              this.yawRate *= 0.6;
+            }
+          }
         }
       }
-    }
-    }
 
-    // ---- ground follow ----
-    // On track (or non-roam) the road is laterally flat -> use q.y. In roam
-    // mode, off the road, follow the actual terrain surface so the car sits
-    // on the grass/runoff instead of hovering at road height.
-    const onRoad2 = Math.abs(q2.lat) <= this.track.width / 2 + 0.1;
-    if (this.freeRoam && this.groundYFn && !onRoad2) {
-      const gy = this.groundYFn(q2);
-      this.groundY = THREE.MathUtils.damp(this.groundY, gy, 18, dt);
-    } else {
-      this.groundY = q2.y; // road is laterally flat
+      // ---- ground follow ----
+      // On track (or non-roam) the road is laterally flat -> use q.y. In roam
+      // mode, off the road, follow the actual terrain surface.
+      const onRoad2 = Math.abs(q2.lat) <= this.track.width / 2 + 0.1;
+      if (this.freeRoam && this.groundYFn && !onRoad2) {
+        const gy = this.groundYFn(q2);
+        this.groundY = THREE.MathUtils.damp(this.groundY, gy, 18, dt);
+      } else {
+        this.groundY = q2.y; // road is laterally flat
+      }
+      this.pos.y = this.groundY;
+      this.groundPitch = Math.atan(F.dot(q2.t) * q2.dyds);
+      this.groundRoll = 0;
     }
-    this.pos.y = this.groundY;
-    this.groundPitch = Math.atan(F.dot(q2.t) * q2.dyds);
-    this.groundRoll = 0;
 
     this.wheelSpin = this.vx / 0.35;
     return q2;
+  }
+
+  // Open-world soft boundary: a large circular arena. Near the edge we push
+  // the car back in and cancel outward velocity so it can't leave the mesh.
+  _worldBounds() {
+    const b = this.world.bounds;
+    const dx = this.pos.x - b.cx, dz = this.pos.z - b.cz;
+    const r = Math.hypot(dx, dz);
+    if (r > b.radius) {
+      const nx = dx / (r || 1), nz = dz / (r || 1);
+      const over = r - b.radius;
+      this.pos.x -= nx * over; this.pos.z -= nz * over;
+      const F = this.forward(_f), Lf = this.left(_l);
+      const vWorld = _v.copy(F).multiplyScalar(this.vx).addScaledVector(Lf, this.vy);
+      const vn = vWorld.x * nx + vWorld.z * nz;
+      if (vn > 0) {
+        vWorld.x -= nx * vn; vWorld.z -= nz * vn;
+        vWorld.multiplyScalar(0.7);
+        this.vx = vWorld.dot(F); this.vy = vWorld.dot(Lf);
+        this.yawRate *= 0.7;
+      }
+    }
   }
 
   // Roam mode boundary: no hard armco. The player can drive across the
@@ -302,3 +374,4 @@ export class CarPhysics {
 }
 
 const _f = new THREE.Vector3(), _l = new THREE.Vector3(), _v = new THREE.Vector3();
+const _ft = new THREE.Vector3(), _wn = new THREE.Vector3();
