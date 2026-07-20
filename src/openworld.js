@@ -14,6 +14,7 @@ import daisyUrl from './models/flower_daisy.glb?url';
 import tulipUrl from './models/flower_tulip.glb?url';
 import bluebellUrl from './models/flower_bluebell.glb?url';
 import gasUrl from './models/gas_station.glb?url';
+import lampUrl from './models/lamp.glb?url';
 
 // ---- deterministic value-noise fbm ----
 function vnoise(x, z) {
@@ -191,12 +192,12 @@ async function loadPropGeo(loader, url) {
 async function buildScenery(world) {
   const group = new THREE.Group();
   const loader = new GLTFLoader();
-  const [tree, rock, barn, silo, grass, daisy, tulip, bluebell, gas] = await Promise.all([
+  const [tree, rock, barn, silo, grass, daisy, tulip, bluebell, gas, lamp] = await Promise.all([
     loadPropGeo(loader, treeUrl), loadPropGeo(loader, rockUrl),
     loadPropGeo(loader, barnUrl), loadPropGeo(loader, siloUrl),
     loadPropGeo(loader, grassUrl), loadPropGeo(loader, daisyUrl),
     loadPropGeo(loader, tulipUrl), loadPropGeo(loader, bluebellUrl),
-    loadPropGeo(loader, gasUrl),
+    loadPropGeo(loader, gasUrl), loadPropGeo(loader, lampUrl),
   ]);
 
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
@@ -279,7 +280,44 @@ async function buildScenery(world) {
   silosInst.instanceMatrix.needsUpdate = true;
   group.add(silosInst);
 
-  return { group, landmarks, gasStations };
+  // ---- street lamps along the ring road ----
+  // poles alternate sides; the arm reaches over the road. The glowing head is
+  // a separate emissive instanced mesh so it can switch on at night. Positions
+  // are returned so the day/night system can move a small point-light pool.
+  const N_LAMPS = 44;
+  const lampPoles = new THREE.InstancedMesh(lamp.geo, lamp.mat, N_LAMPS);
+  lampPoles.castShadow = true;
+  const headGeo = new THREE.SphereGeometry(0.2, 10, 8);
+  const headMat = new THREE.MeshStandardMaterial({
+    color: 0xfff0c0, emissive: 0xffdf9e, emissiveIntensity: 0, roughness: 0.4,
+  });
+  const heads = new THREE.InstancedMesh(headGeo, headMat, N_LAMPS);
+  const lampHeads = [];  // world positions of each glowing head
+  for (let i = 0; i < N_LAMPS; i++) {
+    const a = (i / N_LAMPS) * Math.PI * 2;
+    const side = i % 2 === 0 ? 1 : -1;          // inner/outer alternation
+    const r = ROAD_R + side * (ROAD_HALF + 2.5);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const gy = world.heightAt(x, z);
+    // face the arm toward the road centre (inward if outside, outward if inside)
+    const faceIn = side > 0 ? a + Math.PI : a;
+    _p.set(x, gy, z); _q.setFromAxisAngle(_up, faceIn); _s.set(1, 1, 1);
+    _m.compose(_p, _q, _s);
+    lampPoles.setMatrixAt(i, _m);
+    world.addCollider(x, z, 0.5);
+    // head world pos = pole + arm offset (local (1.2, ~5.5)) rotated by faceIn
+    const hx = x + Math.sin(faceIn) * 1.2, hz = z + Math.cos(faceIn) * 1.2;
+    const hy = gy + 5.42;
+    _p.set(hx, hy, hz); _q.identity(); _s.set(1, 1, 1);
+    _m.compose(_p, _q, _s);
+    heads.setMatrixAt(i, _m);
+    lampHeads.push({ x: hx, y: hy, z: hz });
+  }
+  lampPoles.instanceMatrix.needsUpdate = true;
+  heads.instanceMatrix.needsUpdate = true;
+  group.add(lampPoles, heads);
+
+  return { group, landmarks, gasStations, lampHeads, lampHeadMat: headMat };
 }
 
 // ---------------------------------------------------------------- entry point
@@ -303,11 +341,25 @@ export async function buildOpenWorld(scene, renderer) {
   sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
   sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.04;
   group.add(sun, sun.target);
+  // faint moon fill for night so it's navigable, not pitch black
+  const moon = new THREE.DirectionalLight(0x9fb4e8, 0.0);
+  group.add(moon, moon.target);
 
   group.add(buildTerrainMesh(world));
   const scenery = await buildScenery(world);
   group.add(scenery.group);
   scene.add(group);
+
+  // pool of point lights that hop to the nearest lamps around the player at
+  // night (cheaper than a light per lamp)
+  const POOL = 6;
+  const poolLights = [];
+  for (let i = 0; i < POOL; i++) {
+    const pl = new THREE.PointLight(0xffdca6, 0, 46, 1.8);
+    group.add(pl); poolLights.push(pl);
+  }
+  const lampHeads = scenery.lampHeads || [];
+  const lampHeadMat = scenery.lampHeadMat;
 
   // map metadata for the minimap: ring road + points of interest
   world.mapData = {
@@ -316,15 +368,86 @@ export async function buildOpenWorld(scene, renderer) {
     spawn: world.spawn(),
   };
 
-  const _t = new THREE.Vector3();
+  // ---- day/night cycle ----
+  // tod in [0,1): 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset. One full
+  // day loops every DAY_SECONDS of real time. Start mid-morning.
+  const DAY_SECONDS = 240;
+  let tod = 0.36;
+  const _t = new THREE.Vector3(), _sd = new THREE.Vector3();
+  const dayFog = new THREE.Color(0xcdd8e6), nightFog = new THREE.Color(0x0a1020);
+  const daySun = new THREE.Color(0xfff4e2), duskSun = new THREE.Color(0xff8a3c);
+  const _fog = new THREE.Color(), _sun = new THREE.Color();
+  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+
+  function applyTOD(carPos) {
+    // sun elevation: sin over the day, peaks at noon (tod 0.5)
+    const ang = (tod - 0.25) * Math.PI * 2;   // 0 at sunrise, PI/2 at noon
+    const elev = Math.sin(ang);               // -1..1
+    const azi = THREE.MathUtils.degToRad(150 + tod * 40);
+    const horiz = Math.cos(ang);
+    _sd.set(horiz * Math.sin(azi), elev, horiz * Math.cos(azi)).normalize();
+
+    const day = clamp01(elev * 3.2 + 0.15);   // 0 at night, 1 in full day
+    const twilight = clamp01(1 - Math.abs(elev) * 4); // peaks at horizon
+
+    // sun light: fades out below horizon, warms near the horizon
+    sun.intensity = clamp01(elev * 2.5) * 2.1;
+    _sun.copy(daySun).lerp(duskSun, twilight * 0.8);
+    sun.color.copy(_sun);
+    const snap = 4;
+    _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
+    sun.position.copy(_t).addScaledVector(_sd, 300);
+    sun.target.position.copy(_t);
+    sun.visible = elev > -0.05;
+
+    // moon fill + hemisphere ambient
+    const night = 1 - day;
+    moon.intensity = night * 0.35;
+    moon.position.copy(_t).addScaledVector(_sd, -300); // opposite the sun
+    moon.target.position.copy(_t);
+    hemi.intensity = 0.25 + day * 0.6;
+    hemi.color.setHex(0xbdd2ee).multiplyScalar(0.5 + day * 0.5);
+    hemi.groundColor.setHex(0x5e6e52);
+
+    // sky shader sun + image-based light strength
+    if (sky.material.uniforms) {
+      sky.material.uniforms.sunPosition.value.copy(_sd);
+      sky.material.uniforms.rayleigh.value = 1.2 + day * 1.6 + twilight * 1.5;
+      sky.material.uniforms.turbidity.value = 4 + twilight * 8;
+    }
+    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.12 + day * 0.5;
+
+    // fog blends day<->night
+    _fog.copy(nightFog).lerp(dayFog, day);
+    if (scene.fog) { scene.fog.color.copy(_fog); scene.fog.density = 0.00028 + night * 0.0002; }
+
+    // street lamps: glow ramps up as it gets dark
+    const lampOn = clamp01(0.6 - elev * 2.0); // starts near dusk, full at night
+    if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 2.4;
+
+    // move the point-light pool to the nearest lamps around the player
+    if (lampOn > 0.02 && lampHeads.length) {
+      const near = lampHeads
+        .map(h => ({ h, d: (h.x - carPos.x) ** 2 + (h.z - carPos.z) ** 2 }))
+        .sort((a, b) => a.d - b.d);
+      for (let i = 0; i < poolLights.length; i++) {
+        const src = near[i];
+        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 55; }
+        else poolLights[i].intensity = 0;
+      }
+    } else {
+      for (const pl of poolLights) pl.intensity = 0;
+    }
+    return { day, elev };
+  }
+
   return {
     world, group, sun, hemi,
     landmarks: scenery.landmarks, gasStations: scenery.gasStations,
+    get timeOfDay() { return tod; },
     update(dt, carPos) {
-      const snap = 4;
-      _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
-      sun.position.copy(_t).addScaledVector(sunDir, 300);
-      sun.target.position.copy(_t);
+      tod = (tod + dt / DAY_SECONDS) % 1;
+      applyTOD(carPos);
     },
     dispose() {
       scene.remove(group);

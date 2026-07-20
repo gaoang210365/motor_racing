@@ -150,25 +150,77 @@ def blade(name, base_x, base_y, height, lean, width, rgb):
 
 
 def make_grass():
-    """A tuft of ~7 curved blades, two green tones."""
+    """A fuller tuft of ~13 curved blades in varied green tones + a couple of
+    taller seed stalks, for a lusher look."""
     reset_scene()
     parts = []
     import random
     random.seed(3)
-    for i in range(7):
+    for i in range(13):
         a = random.uniform(0, math.tau)
-        r = random.uniform(0, 0.09)
+        r = random.uniform(0, 0.12)
         bx, by = math.cos(a) * r, math.sin(a) * r
-        h = random.uniform(0.28, 0.46)
-        lean = random.uniform(-0.12, 0.12)
-        g = 0.42 + random.uniform(-0.06, 0.08)
-        b = blade(f"bl{i}", bx, by, h, lean, 0.05, (0.20, g, 0.16))
-        # rotate blade around Z for spread
+        h = random.uniform(0.26, 0.52)
+        lean = random.uniform(-0.16, 0.16)
+        # tonal variation across yellow-green -> deep green
+        g = 0.40 + random.uniform(-0.08, 0.12)
+        rr = 0.16 + random.uniform(0, 0.10)
+        b = blade(f"bl{i}", bx, by, h, lean, random.uniform(0.04, 0.06), (rr, g, 0.14))
         b.rotation_euler[2] = a
         bpy.context.view_layer.objects.active = b
         bpy.ops.object.transform_apply(rotation=True)
         parts.append(b)
+    # two taller seed stalks with a small tip
+    for i in range(2):
+        a = random.uniform(0, math.tau)
+        bx, by = math.cos(a) * 0.03, math.sin(a) * 0.03
+        st = prim_cone(f"stalk{i}", 0.012, 0.008, 0.62, 0, 4, (0.55, 0.55, 0.30))
+        st.location.x = bx; st.location.y = by
+        bpy.context.view_layer.objects.active = st
+        bpy.ops.object.transform_apply(location=True)
+        parts.append(st)
+        tip = prim_uv(f"seed{i}", 0.03, 0.6, 3, 5, (0.72, 0.66, 0.32), squash=1.6)
+        tip.location.x = bx; tip.location.y = by
+        bpy.context.view_layer.objects.active = tip
+        bpy.ops.object.transform_apply(location=True)
+        parts.append(tip)
     return join(parts, "grass")
+
+
+def make_lamp():
+    """A street lamp: base, fluted pole, a curved cantilever arm and a dark
+    lantern hood. The glowing head is added in-game (emissive, switches on at
+    night). Origin at the base; faces so the arm reaches toward +x."""
+    reset_scene()
+    parts = []
+    dark = (0.16, 0.17, 0.20)
+    metal = (0.28, 0.30, 0.34)
+    # base + fluted pole
+    parts.append(prim_cone("base", 0.32, 0.24, 0.5, 0, 10, dark))
+    parts.append(prim_cone("pole", 0.13, 0.09, 5.0, 0.45, 10, metal))
+    parts.append(prim_cone("collar", 0.17, 0.13, 0.28, 4.7, 10, dark))
+    # curved cantilever arm made of short segments sweeping up then over +x
+    import math as _m
+    px, pz = 0.0, 5.1
+    seg_pts = [(0.0, 5.1), (0.45, 5.45), (0.95, 5.62), (1.2, 5.55)]
+    for i in range(len(seg_pts) - 1):
+        x0, z0 = seg_pts[i]; x1, z1 = seg_pts[i + 1]
+        cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+        dx, dz = x1 - x0, z1 - z0
+        length = _m.hypot(dx, dz)
+        seg = prim_cone(f"arm{i}", 0.07, 0.06, length, 0, 8, metal)
+        # orient the segment along (dx,dz): rotate about Y
+        seg.rotation_euler[1] = _m.atan2(dx, dz)
+        seg.location = (cx, 0, cz - length / 2 * 0)  # cone is centered via z offset below
+        # place: cone built along +z from origin; shift to segment midpoint
+        seg.location = (cx - dx / 2, 0, cz - dz / 2)
+        seg.rotation_euler[1] = _m.atan2(dx, dz)
+        bpy.context.view_layer.objects.active = seg
+        bpy.ops.object.transform_apply(location=True, rotation=True)
+        parts.append(seg)
+    # lantern hood at the arm tip (~x=1.2, z=5.5)
+    parts.append(prim_box("hood", 1.2, 0, 5.42, 0.34, 0.34, 0.14, dark))
+    return join(parts, "lamp")
 def _stem_and_leaves(parts, top_z):
     parts.append(prim_cone("stem", 0.018, 0.012, top_z, 0, 5, (0.22, 0.5, 0.18)))
     # two little leaves
@@ -303,7 +355,7 @@ for maker, nm in [
     (make_flower_tulip, "flower_tulip"),
     (make_flower_bluebell, "flower_bluebell"),
     (make_gas_station, "gas_station"),
-    (make_character, "character"),
+    (make_lamp, "lamp"),
 ]:
     obj = maker()
     export(obj, nm)
