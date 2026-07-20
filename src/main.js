@@ -503,7 +503,10 @@ function tick(dt, render = true) {
   // one-shot events work even in menus
   for (const ev of input.takeEvents()) {
     if (!G) continue;
-    if (ev === 'camera') { const m = G.rig.cycle(); hud.setCameraLabel(m.label); }
+    if (ev === 'camera') {
+      if (G.onFootActive) { const lbl = G.rig.cycleFootView(); hud.setCameraLabel(lbl); }
+      else { const m = G.rig.cycle(); hud.setCameraLabel(m.label); }
+    }
     if (ev === 'reset' && !paused) G.race.reset();
     if (ev === 'pause') setPaused(!paused);
     if (ev === 'mute') { audio.setMuted(!audio.muted); hud.message(audio.muted ? '🔇 已静音' : '🔊 声音开启', 1000); }
@@ -520,16 +523,19 @@ function tick(dt, render = true) {
   if (G && !paused) {
     input.update(dt);
     if (G.onFootActive) {
-      // walk the character (camera-relative axes -> world axes)
+      // walk the character with camera-relative WASD -> a world move direction.
+      // camera forward = (sin,cos)(orbitYaw); right = (cos,-sin)(orbitYaw).
       const ax = input.footAxes();
       const yaw = G.rig.orbitYaw || 0;
-      const cos = Math.cos(yaw), sin = Math.sin(yaw);
-      const world = {
-        fwd: ax.fwd * cos - ax.strafe * sin,
-        strafe: ax.fwd * sin + ax.strafe * cos,
+      const fX = Math.sin(yaw), fZ = Math.cos(yaw);
+      const rX = Math.cos(yaw), rZ = -Math.sin(yaw);
+      G.onfoot.step(dt, {
+        dirX: fX * ax.fwd + rX * ax.strafe,
+        dirZ: fZ * ax.fwd + rZ * ax.strafe,
         run: ax.run,
-      };
-      G.onfoot.step(dt, world);
+      });
+      // hide the character in first-person so it doesn't block the view
+      G.onfoot.group.visible = G.rig.footView !== 'first';
       G.rig.update(dt);
       G.env.update(dt, G.onfoot.pos);
       hud.update(G);

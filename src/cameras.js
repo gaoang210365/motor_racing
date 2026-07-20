@@ -33,7 +33,13 @@ export class CameraRig {
   // when set, the rig follows an on-foot character instead of the car
   setFootTarget(foot) {
     this.foot = foot;
-    if (foot) { this.orbitYaw = foot.heading; }
+    if (foot) { this.orbitYaw = foot.heading; this.footView = this.footView || 'third'; }
+  }
+
+  // cycle first/third person while on foot; returns a label
+  cycleFootView() {
+    this.footView = this.footView === 'first' ? 'third' : 'first';
+    return this.footView === 'first' ? '第一人称 · 步行' : '第三人称 · 步行';
   }
 
   cycle() {
@@ -81,26 +87,37 @@ export class CameraRig {
   }
 
   update(dt) {
-    // on-foot follow camera: a chase cam behind the walking character
+    // on-foot camera: first-person (eyes) or third-person chase behind the
+    // character. orbitYaw eases toward the walker's facing; the character
+    // model faces +z at heading 0, so 'forward' = (sin,cos)(orbitYaw).
     if (this.foot) {
       const f = this.foot;
-      // ease the orbit yaw toward the character's facing
       this.orbitYaw = this.orbitYaw ?? f.heading;
       let d = f.heading - this.orbitYaw;
       while (d > Math.PI) d -= Math.PI * 2;
       while (d < -Math.PI) d += Math.PI * 2;
-      this.orbitYaw += d * Math.min(1, dt * 4);
+      this.orbitYaw += d * Math.min(1, dt * 6);
       const dirX = Math.sin(this.orbitYaw), dirZ = Math.cos(this.orbitYaw);
-      _target.set(f.pos.x - dirX * 5.0, f.pos.y + 3.0, f.pos.z - dirZ * 5.0);
-      const lam = 8;
-      this.pos.x = damp(this.pos.x, _target.x, lam, dt);
-      this.pos.y = damp(this.pos.y, _target.y, lam, dt);
-      this.pos.z = damp(this.pos.z, _target.z, lam, dt);
-      _lookT.set(f.pos.x + dirX * 3, f.pos.y + 1.3, f.pos.z + dirZ * 3);
-      this.look.x = damp(this.look.x, _lookT.x, lam * 1.3, dt);
-      this.look.y = damp(this.look.y, _lookT.y, lam * 1.3, dt);
-      this.look.z = damp(this.look.z, _lookT.z, lam * 1.3, dt);
-      this.fov = damp(this.fov, 64, 5, dt);
+      if (this.footView === 'first') {
+        // eyes just above the helmet, looking forward
+        _target.set(f.pos.x + dirX * 0.18, f.pos.y + 1.68, f.pos.z + dirZ * 0.18);
+        this.pos.copy(_target); // rigid, no lag in FP
+        _lookT.set(f.pos.x + dirX * 30, f.pos.y + 1.62, f.pos.z + dirZ * 30);
+        this.look.copy(_lookT);
+        this.fov = damp(this.fov, 74, 6, dt);
+      } else {
+        // third-person: behind + above, looking at the character's upper body
+        _target.set(f.pos.x - dirX * 5.2, f.pos.y + 2.9, f.pos.z - dirZ * 5.2);
+        const lam = 8;
+        this.pos.x = damp(this.pos.x, _target.x, lam, dt);
+        this.pos.y = damp(this.pos.y, _target.y, lam, dt);
+        this.pos.z = damp(this.pos.z, _target.z, lam, dt);
+        _lookT.set(f.pos.x + dirX * 2.5, f.pos.y + 1.35, f.pos.z + dirZ * 2.5);
+        this.look.x = damp(this.look.x, _lookT.x, lam * 1.4, dt);
+        this.look.y = damp(this.look.y, _lookT.y, lam * 1.4, dt);
+        this.look.z = damp(this.look.z, _lookT.z, lam * 1.4, dt);
+        this.fov = damp(this.fov, 64, 5, dt);
+      }
       this.camera.up.set(0, 1, 0);
       this.camera.position.copy(this.pos);
       this.camera.lookAt(this.look);

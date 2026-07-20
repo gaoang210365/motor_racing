@@ -77,22 +77,31 @@ def make_tree():
     per part by building separate bmeshes and joining."""
     reset_scene()
     parts = []
-    # trunk
+    # trunk (higher segments, slight taper + bark irregularity)
     o = new_mesh_obj("trunk")
     bm = bmesh.new()
-    bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=0.28, radius2=0.20, depth=2.2)
-    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 1.1))
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.34, radius2=0.16, depth=2.4)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 1.2))
+    for v in bm.verts:
+        v.co.x += math.sin(v.co.z * 5.0) * 0.02
+        v.co.y += math.cos(v.co.z * 4.3) * 0.02
     bm.to_mesh(o.data); bm.free()
-    set_vertex_color(o, (0.36, 0.26, 0.16)); parts.append(o)
-    # canopy cones
-    for i, (z, r, h) in enumerate([(2.0, 1.9, 2.4), (3.3, 1.4, 2.0), (4.4, 0.9, 1.7)]):
+    set_vertex_color(o, (0.34, 0.24, 0.15)); parts.append(o)
+    # 5 canopy layers, each cone ruffled at the rim for a fuller silhouette
+    layers = [(1.9, 2.15, 2.5), (2.7, 1.85, 2.2), (3.45, 1.5, 2.0),
+              (4.15, 1.1, 1.8), (4.8, 0.7, 1.5)]
+    for i, (z, r, h) in enumerate(layers):
         o = new_mesh_obj(f"canopy{i}")
         bm = bmesh.new()
-        bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=r, radius2=0.02, depth=h)
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=r, radius2=0.03, depth=h)
+        for v in bm.verts:  # ruffle the base rim so it isn't a clean cone
+            if v.co.z < 0.05:
+                v.co.x += math.sin(v.co.y * 8 + i) * 0.09
+                v.co.y += math.cos(v.co.x * 8 + i) * 0.09
         bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, z + h / 2))
         bm.to_mesh(o.data); bm.free()
-        shade = 0.20 + i * 0.03
-        set_vertex_color(o, (0.16 + shade * 0.3, 0.42 + shade, 0.18 + shade * 0.2)); parts.append(o)
+        g = 0.40 + i * 0.035
+        set_vertex_color(o, (0.13 + i * 0.02, g, 0.16 + i * 0.015)); parts.append(o)
     bpy.ops.object.select_all(action="DESELECT")
     for p in parts: p.select_set(True)
     bpy.context.view_layer.objects.active = parts[0]
@@ -104,10 +113,11 @@ def make_rock():
     reset_scene()
     o = new_mesh_obj("rock")
     bm = bmesh.new()
-    bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1.0)
-    for v in bm.verts:  # jitter for a craggy look
+    bmesh.ops.create_icosphere(bm, subdivisions=2, radius=1.0)
+    for v in bm.verts:  # layered jitter for craggy facets
         v.co += Vector((math.sin(v.co.x * 9) * 0.12, math.sin(v.co.y * 7) * 0.12, math.sin(v.co.z * 8) * 0.1))
-    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 0.5))
+        v.co += Vector((math.sin(v.co.y * 21) * 0.05, math.sin(v.co.z * 19) * 0.05, math.sin(v.co.x * 23) * 0.05))
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 0.42))
     bm.to_mesh(o.data); bm.free()
     set_vertex_color(o, (0.44, 0.41, 0.36))
     return o, 1.0
@@ -117,10 +127,22 @@ def make_barn():
     """A red barn: box body + gable roof."""
     reset_scene()
     parts = []
-    o = new_mesh_obj("body")
-    bm = bmesh.new(); add_box(bm, 0, 0, 2.0, 7, 5, 4.0); bm.to_mesh(o.data); bm.free()
-    set_vertex_color(o, (0.55, 0.13, 0.11)); parts.append(o)
-    # roof (prism)
+    def box_part(name, cx, cy, cz, sx, sy, sz, rgb):
+        oo = new_mesh_obj(name)
+        bmm = bmesh.new(); add_box(bmm, cx, cy, cz, sx, sy, sz); bmm.to_mesh(oo.data); bmm.free()
+        set_vertex_color(oo, rgb); parts.append(oo); return oo
+    box_part("body", 0, 0, 2.0, 7, 5, 4.0, (0.55, 0.13, 0.11))
+    # corner trim posts (white) at the four vertical edges
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            box_part(f"post{sx}{sy}", sx * 3.45, sy * 2.45, 2.0, 0.22, 0.22, 4.05, (0.90, 0.88, 0.84))
+    # big sliding door (front, +x face) with cross-braces
+    box_part("door", 3.52, 0, 1.5, 0.12, 2.2, 3.0, (0.86, 0.84, 0.80))
+    box_part("doorX1", 3.58, 0, 1.5, 0.06, 2.2, 0.16, (0.5, 0.14, 0.12))
+    # two windows on the +y side
+    for sx in (-1, 1):
+        box_part(f"win{sx}", sx * 1.8, 2.53, 2.7, 1.0, 0.12, 1.0, (0.55, 0.70, 0.82))
+    # roof (prism) + ridge cap
     o = new_mesh_obj("roof")
     bm = bmesh.new()
     v = [bm.verts.new(p) for p in [(-3.7,-2.7,4.0),(-3.7,2.7,4.0),(3.7,-2.7,4.0),(3.7,2.7,4.0),(-3.7,0,5.8),(3.7,0,5.8)]]
@@ -128,6 +150,7 @@ def make_barn():
     bm.faces.new([v[0],v[4],v[5],v[2]]); bm.faces.new([v[1],v[3],v[5],v[4]])
     bm.to_mesh(o.data); bm.free()
     set_vertex_color(o, (0.25, 0.22, 0.20)); parts.append(o)
+    box_part("ridge", 0, 0, 5.82, 7.4, 0.24, 0.16, (0.15, 0.14, 0.13))
     bpy.ops.object.select_all(action="DESELECT")
     for p in parts: p.select_set(True)
     bpy.context.view_layer.objects.active = parts[0]
@@ -140,16 +163,31 @@ def make_silo():
     parts = []
     o = new_mesh_obj("tube")
     bm = bmesh.new()
-    bmesh.ops.create_cone(bm, cap_ends=True, segments=14, radius1=2.2, radius2=2.2, depth=11)
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=20, radius1=2.2, radius2=2.2, depth=11)
     bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 5.5))
     bm.to_mesh(o.data); bm.free()
     set_vertex_color(o, (0.78, 0.80, 0.83)); parts.append(o)
+    # horizontal corrugation rings
+    for i, z in enumerate([2.0, 4.0, 6.0, 8.0, 10.0]):
+        o = new_mesh_obj(f"rib{i}")
+        bm = bmesh.new()
+        bmesh.ops.create_cone(bm, cap_ends=False, segments=20, radius1=2.28, radius2=2.28, depth=0.35)
+        bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, z))
+        bm.to_mesh(o.data); bm.free()
+        set_vertex_color(o, (0.62, 0.64, 0.68)); parts.append(o)
     o = new_mesh_obj("dome")
     bm = bmesh.new()
-    bmesh.ops.create_cone(bm, cap_ends=True, segments=14, radius1=2.3, radius2=0.1, depth=2.2)
-    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 12.1))
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=20, radius1=2.3, radius2=0.1, depth=2.4)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 12.2))
     bm.to_mesh(o.data); bm.free()
     set_vertex_color(o, (0.55, 0.57, 0.60)); parts.append(o)
+    # top cap knob
+    o = new_mesh_obj("knob")
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=6, radius=0.35)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, 13.4))
+    bm.to_mesh(o.data); bm.free()
+    set_vertex_color(o, (0.5, 0.52, 0.55)); parts.append(o)
     bpy.ops.object.select_all(action="DESELECT")
     for p in parts: p.select_set(True)
     bpy.context.view_layer.objects.active = parts[0]
