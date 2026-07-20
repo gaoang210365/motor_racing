@@ -9,6 +9,11 @@ import treeUrl from './models/tree.glb?url';
 import rockUrl from './models/rock.glb?url';
 import barnUrl from './models/barn.glb?url';
 import siloUrl from './models/silo.glb?url';
+import grassUrl from './models/grass.glb?url';
+import daisyUrl from './models/flower_daisy.glb?url';
+import tulipUrl from './models/flower_tulip.glb?url';
+import bluebellUrl from './models/flower_bluebell.glb?url';
+import gasUrl from './models/gas_station.glb?url';
 
 // ---- deterministic value-noise fbm ----
 function vnoise(x, z) {
@@ -186,19 +191,22 @@ async function loadPropGeo(loader, url) {
 async function buildScenery(world) {
   const group = new THREE.Group();
   const loader = new GLTFLoader();
-  const [tree, rock, barn, silo] = await Promise.all([
+  const [tree, rock, barn, silo, grass, daisy, tulip, bluebell, gas] = await Promise.all([
     loadPropGeo(loader, treeUrl), loadPropGeo(loader, rockUrl),
     loadPropGeo(loader, barnUrl), loadPropGeo(loader, siloUrl),
+    loadPropGeo(loader, grassUrl), loadPropGeo(loader, daisyUrl),
+    loadPropGeo(loader, tulipUrl), loadPropGeo(loader, bluebellUrl),
+    loadPropGeo(loader, gasUrl),
   ]);
 
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
   const _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
-  // generic scatterer: places `count` instances, registers colliders
-  function scatter(prop, count, { rMin, rMax, sMin, sMax, clearRoad, colliderR, seed }) {
+  // generic scatterer: places `count` instances, optionally registers colliders
+  function scatter(prop, count, { rMin, rMax, sMin, sMax, clearRoad, colliderR, seed, noCollide }) {
     const rnd = mulberry(seed);
     const inst = new THREE.InstancedMesh(prop.geo, prop.mat, count);
-    inst.castShadow = true; inst.receiveShadow = true;
+    inst.castShadow = !noCollide; inst.receiveShadow = true;
     let n = 0;
     for (let i = 0; i < count * 4 && n < count; i++) {
       const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
@@ -210,7 +218,7 @@ async function buildScenery(world) {
       _s.set(sc, sc, sc);
       _m.compose(_p, _q, _s);
       inst.setMatrixAt(n, _m);
-      world.addCollider(x, z, colliderR * sc);
+      if (!noCollide) world.addCollider(x, z, colliderR * sc);
       n++;
     }
     inst.count = n;
@@ -223,6 +231,33 @@ async function buildScenery(world) {
   scatter(tree, 900, { rMin: 130, rMax, sMin: 0.7, sMax: 1.7, clearRoad: 6, colliderR: 0.9, seed: 1337 });
   scatter(rock, 240, { rMin: 120, rMax, sMin: 0.6, sMax: 2.6, clearRoad: 3, colliderR: 1.0, seed: 91 });
   scatter(barn, 14, { rMin: 200, rMax: rMax - 60, sMin: 1.0, sMax: 1.5, clearRoad: 16, colliderR: 4.2, seed: 7 });
+
+  // ground cover: dense grass tufts + three flower species. No colliders —
+  // you drive/walk right through them. `noCollide` skips collider registration.
+  scatter(grass, 4200, { rMin: 40, rMax, sMin: 0.7, sMax: 1.5, clearRoad: 2, colliderR: 0, seed: 555, noCollide: true });
+  scatter(daisy, 900, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 202, noCollide: true });
+  scatter(tulip, 700, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 303, noCollide: true });
+  scatter(bluebell, 600, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 404, noCollide: true });
+
+  // gas stations beside the ring road — placed just off the paved band, with
+  // a collider. Positions returned for the minimap.
+  const gasStations = [];
+  const gasInst = new THREE.InstancedMesh(gas.geo, gas.mat, 3);
+  gasInst.castShadow = true; gasInst.receiveShadow = true;
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + 1.0;
+    const r = ROAD_R + ROAD_HALF + 12;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    _p.set(x, world.heightAt(x, z), z);
+    _q.setFromAxisAngle(_up, a + Math.PI / 2); // face the road
+    _s.set(1, 1, 1);
+    _m.compose(_p, _q, _s);
+    gasInst.setMatrixAt(i, _m);
+    world.addCollider(x, z, 7.5);
+    gasStations.push({ x, z });
+  }
+  gasInst.instanceMatrix.needsUpdate = true;
+  group.add(gasInst);
 
   // silos as landmark checkpoints — placed on a wide ring, returned so the
   // session can use them as exploration goals
@@ -244,7 +279,7 @@ async function buildScenery(world) {
   silosInst.instanceMatrix.needsUpdate = true;
   group.add(silosInst);
 
-  return { group, landmarks };
+  return { group, landmarks, gasStations };
 }
 
 // ---------------------------------------------------------------- entry point
@@ -274,9 +309,17 @@ export async function buildOpenWorld(scene, renderer) {
   group.add(scenery.group);
   scene.add(group);
 
+  // map metadata for the minimap: ring road + points of interest
+  world.mapData = {
+    radius: world.radius, roadR: ROAD_R,
+    landmarks: scenery.landmarks, gasStations: scenery.gasStations,
+    spawn: world.spawn(),
+  };
+
   const _t = new THREE.Vector3();
   return {
-    world, group, sun, hemi, landmarks: scenery.landmarks,
+    world, group, sun, hemi,
+    landmarks: scenery.landmarks, gasStations: scenery.gasStations,
     update(dt, carPos) {
       const snap = 4;
       _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);

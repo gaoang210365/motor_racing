@@ -9,6 +9,7 @@ import { CIRCUITS } from './data/circuits.js';
 import { Track } from './track.js';
 import { buildEnvironment, groundHeightAt } from './environment.js';
 import { buildOpenWorld } from './openworld.js';
+import { OnFoot, loadCharacter } from './onfoot.js';
 import { buildSculptedCar, buildCarInstance, clearCarCache } from './carSculpt.js';
 import { TEAMS, TEAM_ORDER, loadSelectedTeam } from './teams.js';
 import { CarPhysics } from './physics.js';
@@ -129,6 +130,31 @@ function setPaused(v) {
   paused = v;
   hud.show('pause', v);
   if (audio.ctx) { v ? audio.ctx.suspend() : audio.ctx.resume(); }
+}
+
+// exit the car to walk (or get back in if within range)
+function toggleOnFoot() {
+  if (!G || !G.onfoot) return;
+  const p = G.physics, foot = G.onfoot;
+  if (!G.onFootActive) {
+    // step out beside the car (left side), stop the car
+    const Lf = p.left(new THREE.Vector3());
+    const x = p.pos.x + Lf.x * 2.2, z = p.pos.z + Lf.z * 2.2;
+    foot.placeAt(x, z, p.heading);
+    foot.group.visible = true;
+    p.vx = p.vy = p.yawRate = 0;
+    G.onFootActive = true;
+    G.rig.setFootTarget(foot);
+    hud.message('🚶 下车步行 · 按 F 上车<br><span class="en">ON FOOT · F to enter</span>', 2200);
+  } else {
+    // must be near the car to get back in
+    const d = Math.hypot(foot.pos.x - p.pos.x, foot.pos.z - p.pos.z);
+    if (d > 6) { hud.message('走近赛车才能上车', 1400); return; }
+    foot.group.visible = false;
+    G.onFootActive = false;
+    G.rig.setFootTarget(null);
+    hud.message('🏎 已上车<br><span class="en">BACK IN THE CAR</span>', 1600);
+  }
 }
 
 // ------------------------------------------------------------ game session
@@ -297,6 +323,13 @@ async function buildOpenWorldGame(teamId) {
   const particles = new Particles(scene);
   const skids = new SkidMarks(scene);
 
+  // on-foot character (hidden until the player exits the car)
+  if (loadMsg) loadMsg.textContent = '正在准备驾驶员…';
+  const charModel = await loadCharacter();
+  charModel.visible = false;
+  scene.add(charModel);
+  const onfoot = new OnFoot(world, charModel);
+
   // race shim: satisfies the game loop + HUD without laps/AI. Also tracks the
   // silo landmarks as simple exploration checkpoints.
   const landmarks = env.landmarks || [];
@@ -335,10 +368,13 @@ async function buildOpenWorldGame(teamId) {
   hud.setMode('explore', 0);
   hud.setCameraLabel(CAMERA_MODES[0].label);
 
+  hud.setOpenWorldMap(world.mapData);
+
   G = {
     scene, track: null, env, car, physics, entries, rig, particles, skids, race,
     cfg: { flag: '🗺', name: '开放世界', fullName: 'Open World', corners: [], sky: { type: 'day' } },
     team, composer: null, accum: 0, smoke: { t: 0 }, lastGear: 1, wallCd: 0,
+    onfoot, world, onFootActive: false,
   };
   window.__game = G;
 }
@@ -478,26 +514,43 @@ function tick(dt, render = true) {
       hud.setCameraLabel(m.label);
       hud.message(G.race.autopilotActive ? '🤖 演示模式 · 观战视角' : '🎮 手动驾驶', 1400);
     }
+    if (ev === 'enter' && G.onfoot && !paused) toggleOnFoot();
   }
 
   if (G && !paused) {
     input.update(dt);
-    G.accum = Math.min(G.accum + dt, FIXED * 8);
-    const inp = { steer: input.steer, throttle: input.throttle, brake: input.brake };
-    while (G.accum >= FIXED) {
-      for (const e of G.entries) {
-        const ein = G.race.inputFor(e, inp);
-        e._lastInput = ein;
-        e.physics.step(FIXED, ein);
+    if (G.onFootActive) {
+      // walk the character (camera-relative axes -> world axes)
+      const ax = input.footAxes();
+      const yaw = G.rig.orbitYaw || 0;
+      const cos = Math.cos(yaw), sin = Math.sin(yaw);
+      const world = {
+        fwd: ax.fwd * cos - ax.strafe * sin,
+        strafe: ax.fwd * sin + ax.strafe * cos,
+        run: ax.run,
+      };
+      G.onfoot.step(dt, world);
+      G.rig.update(dt);
+      G.env.update(dt, G.onfoot.pos);
+      hud.update(G);
+    } else {
+      G.accum = Math.min(G.accum + dt, FIXED * 8);
+      const inp = { steer: input.steer, throttle: input.throttle, brake: input.brake };
+      while (G.accum >= FIXED) {
+        for (const e of G.entries) {
+          const ein = G.race.inputFor(e, inp);
+          e._lastInput = ein;
+          e.physics.step(FIXED, ein);
+        }
+        G.accum -= FIXED;
       }
-      G.accum -= FIXED;
+      if (G.entries.length > 1) G.race.resolveCollisions();
+      G.race.update(dt, inp);
+      syncVisuals(dt);
+      G.rig.update(dt);
+      G.env.update(dt, G.physics.pos);
+      hud.update(G);
     }
-    if (G.entries.length > 1) G.race.resolveCollisions();
-    G.race.update(dt, inp);
-    syncVisuals(dt);
-    G.rig.update(dt);
-    G.env.update(dt, G.physics.pos);
-    hud.update(G);
   }
 
   if (G && render) {

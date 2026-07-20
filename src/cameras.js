@@ -30,6 +30,12 @@ export class CameraRig {
 
   get mode() { return CAMERA_MODES[this.modeIdx].id; }
 
+  // when set, the rig follows an on-foot character instead of the car
+  setFootTarget(foot) {
+    this.foot = foot;
+    if (foot) { this.orbitYaw = foot.heading; }
+  }
+
   cycle() {
     this.modeIdx = (this.modeIdx + 1) % CAMERA_MODES.length;
     this.snap();
@@ -75,6 +81,32 @@ export class CameraRig {
   }
 
   update(dt) {
+    // on-foot follow camera: a chase cam behind the walking character
+    if (this.foot) {
+      const f = this.foot;
+      // ease the orbit yaw toward the character's facing
+      this.orbitYaw = this.orbitYaw ?? f.heading;
+      let d = f.heading - this.orbitYaw;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      this.orbitYaw += d * Math.min(1, dt * 4);
+      const dirX = Math.sin(this.orbitYaw), dirZ = Math.cos(this.orbitYaw);
+      _target.set(f.pos.x - dirX * 5.0, f.pos.y + 3.0, f.pos.z - dirZ * 5.0);
+      const lam = 8;
+      this.pos.x = damp(this.pos.x, _target.x, lam, dt);
+      this.pos.y = damp(this.pos.y, _target.y, lam, dt);
+      this.pos.z = damp(this.pos.z, _target.z, lam, dt);
+      _lookT.set(f.pos.x + dirX * 3, f.pos.y + 1.3, f.pos.z + dirZ * 3);
+      this.look.x = damp(this.look.x, _lookT.x, lam * 1.3, dt);
+      this.look.y = damp(this.look.y, _lookT.y, lam * 1.3, dt);
+      this.look.z = damp(this.look.z, _lookT.z, lam * 1.3, dt);
+      this.fov = damp(this.fov, 64, 5, dt);
+      this.camera.up.set(0, 1, 0);
+      this.camera.position.copy(this.pos);
+      this.camera.lookAt(this.look);
+      if (Math.abs(this.camera.fov - this.fov) > 0.05) { this.camera.fov = this.fov; this.camera.updateProjectionMatrix(); }
+      return;
+    }
     const p = this.physics;
     const spd = p.speed;
     const t = THREE.MathUtils.clamp(spd / 90, 0, 1);

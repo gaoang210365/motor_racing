@@ -16,6 +16,7 @@ export class Input {
       if (k === 'escape') this.events.push('pause');
       if (k === 'm') this.events.push('mute');
       if (k === 'p') this.events.push('autopilot');
+      if (k === 'f') this.events.push('enter'); // enter/exit car (open world)
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.key.toLowerCase()));
@@ -23,6 +24,18 @@ export class Input {
   }
 
   takeEvents() { const ev = this.events; this.events = []; return ev; }
+
+  // raw digital movement axes for the on-foot walker (W/S = fwd, A/D = strafe)
+  footAxes() {
+    const k = this.keys;
+    let fwd = 0, strafe = 0;
+    if (k.has('w') || k.has('arrowup')) fwd += 1;
+    if (k.has('s') || k.has('arrowdown')) fwd -= 1;
+    if (k.has('a') || k.has('arrowleft')) strafe -= 1;
+    if (k.has('d') || k.has('arrowright')) strafe += 1;
+    const run = k.has('shift');
+    return { fwd, strafe, run };
+  }
 
   update(dt) {
     const k = this.keys;

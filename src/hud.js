@@ -51,6 +51,7 @@ export class Hud {
       hud: $('hud'), menu: $('menu'), pause: $('pause'), loading: $('loading'),
       speed: $('hud-speed'), gear: $('hud-gear'), rpmFill: $('hud-rpm-fill'),
       drs: $('hud-drs'), time: $('hud-time'), last: $('hud-last'), best: $('hud-best'),
+      times: $('hud-times'),
       lap: $('hud-lap'), trackName: $('hud-track-name'), corner: $('hud-corner'),
       camLabel: $('hud-camera-label'), minimap: $('minimap'),
       lights: $('lights'), msg: $('center-msg'), wrongway: $('wrongway'),
@@ -80,7 +81,14 @@ export class Hud {
     this.raceLaps = laps;
     this.el.pos.classList.toggle('hidden', mode !== 'race');
     this.el.gaps.classList.toggle('hidden', mode !== 'race');
+    // the top-centre lap-timer block is meaningless when exploring
+    if (this.el.times) this.el.times.classList.toggle('hidden', mode === 'explore');
+    this.openWorldMap = null;
   }
+
+  // supply the open-world map metadata; the minimap then draws the ring road,
+  // landmarks (silos) and gas stations instead of a track polyline
+  setOpenWorldMap(data) { this.openWorldMap = data; }
 
   redrawMap() {
     const cv = this.el.minimap;
@@ -151,9 +159,10 @@ export class Hud {
     this.show('wrongway', race.wrongWay);
     this.el.autopilot.classList.toggle('hidden', !race.autopilotActive);
 
-    // minimap: every car in its team colour, player on top in yellow
+    // minimap
     const ctx = this.mapCtx;
     ctx.clearRect(0, 0, this.el.minimap.width, this.el.minimap.height);
+    if (this.openWorldMap) { this.drawOpenWorldMap(ctx, state); return; }
     if (this.mapBase) ctx.drawImage(this.mapBase, 0, 0);
     if (this.mapFn) {
       for (const e of race.entries) {
@@ -168,6 +177,48 @@ export class Hud {
       ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cz, 5, 0, 7); ctx.fill(); ctx.stroke();
     }
+  }
+
+  // open-world minimap: world is a big disc; draw the ring road, silos, gas
+  // stations and the player (heading arrow, cyan when on foot)
+  drawOpenWorldMap(ctx, state) {
+    const m = this.openWorldMap;
+    const W = this.el.minimap.width, H = this.el.minimap.height;
+    const R = W / 2 - 6, cx = W / 2, cy = H / 2;
+    const sc = R / m.radius;             // world metres -> px
+    const mapX = x => cx + x * sc, mapZ = z => cy + z * sc;
+    // backdrop disc
+    ctx.fillStyle = 'rgba(24,32,24,0.72)';
+    ctx.beginPath(); ctx.arc(cx, cy, R + 4, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, R + 4, 0, 7); ctx.stroke();
+    // ring road
+    ctx.strokeStyle = 'rgba(210,214,220,0.8)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, m.roadR * sc, 0, 7); ctx.stroke();
+    // gas stations
+    for (const g of (m.gasStations || [])) {
+      ctx.fillStyle = '#ff7a1a';
+      ctx.beginPath(); ctx.arc(mapX(g.x), mapZ(g.z), 4, 0, 7); ctx.fill();
+    }
+    // landmark silos (green = found, white = not)
+    for (const lm of (m.landmarks || [])) {
+      ctx.fillStyle = lm.reached ? '#57d977' : '#e8ecf4';
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(mapX(lm.x), mapZ(lm.z), 3.4, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    // player: arrow pointing along heading
+    const onFoot = !!(state.onFootActive);
+    const pos = onFoot ? state.onfoot.pos : state.physics.pos;
+    const heading = onFoot ? state.onfoot.heading : state.physics.heading;
+    const px = mapX(pos.x), pz = mapZ(pos.z);
+    ctx.save();
+    ctx.translate(px, pz);
+    ctx.rotate(-heading);                // screen +z is down; heading 0 = +z
+    ctx.fillStyle = onFoot ? '#39d7e8' : '#ffd21e';
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
   }
 
   setCameraLabel(label) {
