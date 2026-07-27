@@ -335,11 +335,17 @@ async function buildOpenWorldGame(teamId) {
   const particles = new Particles(scene);
   const skids = new SkidMarks(scene);
 
-  // on-foot character (hidden until the player exits the car)
+  // on-foot character (hidden until the player exits the car). Pre-warm its
+  // shaders/geometry now — otherwise the first frame it appears (pressing F to
+  // step out) stalls while the GPU compiles ~25 new materials, which showed up
+  // as a hitch on exit. compile() skips invisible objects, so reveal it just
+  // for the warm-up, then hide it again behind the loading overlay.
   if (loadMsg) loadMsg.textContent = '正在准备驾驶员…';
   const charModel = await loadCharacter();
-  charModel.visible = false;
   scene.add(charModel);
+  charModel.visible = true;
+  await renderer.compileAsync(scene, camera);
+  charModel.visible = false;
   const onfoot = new OnFoot(world, charModel);
 
   // race shim: satisfies the game loop + HUD without laps/AI. Also tracks the

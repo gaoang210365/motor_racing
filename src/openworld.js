@@ -518,6 +518,8 @@ export async function buildOpenWorld(scene, renderer) {
     const pl = new THREE.PointLight(0xffe0b0, 0, 70, 1.5);
     group.add(pl); poolLights.push(pl);
   }
+  // scratch for the allocation-free nearest-lamp selection each frame
+  const _nearI = new Int32Array(POOL), _nearD = new Float64Array(POOL);
   const lampHeads = scenery.lampHeads || [];
   const lampHeadMat = scenery.lampHeadMat;
 
@@ -589,16 +591,27 @@ export async function buildOpenWorld(scene, renderer) {
     if (renderer) renderer.toneMappingExposure = 0.5 + smooth(night) * 0.5;
     nightFactor = night;                      // exposed so main can drive bloom
 
-    // street lamps glow from dusk; pool lights follow nearest heads
+    // street lamps glow from dusk; pool lights follow nearest heads. Pick the
+    // nearest POOL heads with an allocation-free partial selection (was a
+    // per-frame map()+sort() over ~80 lamps that churned the GC every frame).
     const lampOn = clamp01(0.55 - elev * 2.2);
     if (lampHeadMat) lampHeadMat.emissiveIntensity = lampOn * 5.5;
     if (lampOn > 0.02 && lampHeads.length) {
-      const near = lampHeads
-        .map(h => ({ h, d: (h.x - carPos.x) ** 2 + (h.z - carPos.z) ** 2 }))
-        .sort((a, b) => a.d - b.d);
-      for (let i = 0; i < poolLights.length; i++) {
-        const src = near[i];
-        if (src) { poolLights[i].position.set(src.h.x, src.h.y, src.h.z); poolLights[i].intensity = lampOn * 140; }
+      const P = poolLights.length;
+      for (let i = 0; i < P; i++) { _nearI[i] = -1; _nearD[i] = Infinity; }
+      for (let j = 0; j < lampHeads.length; j++) {
+        const h = lampHeads[j];
+        const d = (h.x - carPos.x) ** 2 + (h.z - carPos.z) ** 2;
+        // insert into the sorted top-P if closer than the current worst
+        if (d < _nearD[P - 1]) {
+          let k = P - 1;
+          while (k > 0 && _nearD[k - 1] > d) { _nearD[k] = _nearD[k - 1]; _nearI[k] = _nearI[k - 1]; k--; }
+          _nearD[k] = d; _nearI[k] = j;
+        }
+      }
+      for (let i = 0; i < P; i++) {
+        const idx = _nearI[i];
+        if (idx >= 0) { const h = lampHeads[idx]; poolLights[i].position.set(h.x, h.y, h.z); poolLights[i].intensity = lampOn * 140; }
         else poolLights[i].intensity = 0;
       }
     } else {
