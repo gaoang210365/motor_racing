@@ -320,20 +320,43 @@ async function buildScenery(world) {
   ]);
 
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
-  const _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
+  const _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _n = new THREE.Vector3();
 
-  // generic scatterer: places `count` instances, optionally registers colliders
-  function scatter(prop, count, { rMin, rMax, sMin, sMax, clearRoad, colliderR, seed, noCollide }) {
+  // Grounded placement: the terrain is a discrete triangle mesh, so a prop
+  // dropped at the exact heightAt(x,z) can float above — or poke through — the
+  // faceted surface on slopes. Sample the height at the base footprint (centre
+  // + a ring) and seat the prop at the LOWEST corner, sunk a touch further by
+  // `embed`, so its base always meets or dips below the rendered ground.
+  function seatY(x, z, footR, embed) {
+    let lo = world.heightAt(x, z);
+    for (let k = 0; k < 4; k++) {
+      const a = k * Math.PI / 2;
+      const h = world.heightAt(x + Math.cos(a) * footR, z + Math.sin(a) * footR);
+      if (h < lo) lo = h;
+    }
+    return lo - embed;
+  }
+
+  // generic scatterer: places `count` instances, optionally registers colliders.
+  // `maxSlope` (0..1, tan of terrain angle) rejects spots too steep for a prop
+  // to sit cleanly; `embed`/`footR` control how it's grounded (see seatY).
+  function scatter(prop, count, { rMin, rMax, sMin, sMax, clearRoad, colliderR, seed, noCollide, maxSlope = 1, embed = 0.1, footR = 0.9 }) {
     const rnd = mulberry(seed);
     const inst = new THREE.InstancedMesh(prop.geo, prop.mat, count);
     inst.castShadow = !noCollide; inst.receiveShadow = true;
     let n = 0;
-    for (let i = 0; i < count * 4 && n < count; i++) {
+    for (let i = 0; i < count * 6 && n < count; i++) {
       const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
       if (clearRoad && roadDist(x, z) < ROAD_HALF + clearRoad) continue;
+      // reject slopes steeper than this prop tolerates (avoids hillside float)
+      if (maxSlope < 1) {
+        world.normalAt(x, z, _n);
+        const slope = Math.hypot(_n.x, _n.z) / Math.max(_n.y, 0.05);
+        if (slope > maxSlope) continue;
+      }
       const sc = sMin + rnd() * (sMax - sMin);
-      _p.set(x, world.heightAt(x, z), z);
+      _p.set(x, seatY(x, z, footR * sc, embed * sc), z);
       _q.setFromAxisAngle(_up, rnd() * Math.PI * 2);
       _s.set(sc, sc, sc);
       _m.compose(_p, _q, _s);
@@ -348,16 +371,20 @@ async function buildScenery(world) {
   }
 
   const rMax = world.radius - 120;
-  scatter(tree, 900, { rMin: 130, rMax, sMin: 0.7, sMax: 1.7, clearRoad: 6, colliderR: 0.9, seed: 1337 });
-  scatter(rock, 240, { rMin: 120, rMax, sMin: 0.6, sMax: 2.6, clearRoad: 3, colliderR: 1.0, seed: 91 });
-  scatter(barn, 14, { rMin: 200, rMax: rMax - 60, sMin: 1.0, sMax: 1.5, clearRoad: 16, colliderR: 4.2, seed: 7 });
+  // trees: trunks read as vertical, so keep them off steep hillsides and sink
+  // the base a little; rocks tolerate steeper ground and embed deeper so they
+  // nestle into the terrain; barns need near-flat footings.
+  scatter(tree, 900, { rMin: 130, rMax, sMin: 0.7, sMax: 1.7, clearRoad: 6, colliderR: 0.9, seed: 1337, maxSlope: 0.42, embed: 0.35, footR: 1.1 });
+  scatter(rock, 240, { rMin: 120, rMax, sMin: 0.6, sMax: 2.6, clearRoad: 3, colliderR: 1.0, seed: 91, maxSlope: 0.75, embed: 0.6, footR: 1.2 });
+  scatter(barn, 14, { rMin: 200, rMax: rMax - 60, sMin: 1.0, sMax: 1.5, clearRoad: 16, colliderR: 4.2, seed: 7, maxSlope: 0.22, embed: 0.3, footR: 4.0 });
 
   // ground cover: dense grass tufts + three flower species. No colliders —
   // you drive/walk right through them. `noCollide` skips collider registration.
-  scatter(grass, 4200, { rMin: 40, rMax, sMin: 0.7, sMax: 1.5, clearRoad: 2, colliderR: 0, seed: 555, noCollide: true });
-  scatter(daisy, 900, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 202, noCollide: true });
-  scatter(tulip, 700, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 303, noCollide: true });
-  scatter(bluebell, 600, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 404, noCollide: true });
+  // A small embed keeps blades/petals rooted in slopes instead of hovering.
+  scatter(grass, 4200, { rMin: 40, rMax, sMin: 0.7, sMax: 1.5, clearRoad: 2, colliderR: 0, seed: 555, noCollide: true, embed: 0.06, footR: 0.4 });
+  scatter(daisy, 900, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 202, noCollide: true, embed: 0.05, footR: 0.4 });
+  scatter(tulip, 700, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 303, noCollide: true, embed: 0.05, footR: 0.4 });
+  scatter(bluebell, 600, { rMin: 45, rMax, sMin: 0.8, sMax: 1.4, clearRoad: 2, colliderR: 0, seed: 404, noCollide: true, embed: 0.05, footR: 0.4 });
 
   // gas stations beside the ring road — placed just off the paved band, with
   // a collider. Positions returned for the minimap.
@@ -388,7 +415,7 @@ async function buildScenery(world) {
     const a = (i / 6) * Math.PI * 2 + 0.4, r = world.radius * 0.62;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     const sc = 1.3;
-    _p.set(x, world.heightAt(x, z), z);
+    _p.set(x, seatY(x, z, 2.6 * sc, 0.4), z);
     _q.setFromAxisAngle(_up, a);
     _s.set(sc, sc, sc);
     _m.compose(_p, _q, _s);
@@ -508,8 +535,17 @@ export async function buildOpenWorld(scene, renderer) {
   let nightFactor = 0;                   // 0 = full day, 1 = full night
   const _t = new THREE.Vector3(), _sd = new THREE.Vector3();
   const dayFog = new THREE.Color(0xcdd8e6), nightFog = new THREE.Color(0x0c1220);
+  const duskFog = new THREE.Color(0xe0a878);          // warm haze at the horizon
   const _fog = new THREE.Color();
+  // sun tints: warm gold near the horizon -> neutral white overhead
+  const sunLow = new THREE.Color(0xff9d52), sunHigh = new THREE.Color(0xfff4e2);
+  const _sun = new THREE.Color();
+  // hemisphere sky tint warms at dusk/dawn too
+  const skyDay = new THREE.Color(0xbdd2ee), skyDusk = new THREE.Color(0xd7b48a);
+  const _sky = new THREE.Color();
   const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  const smooth = v => { v = clamp01(v); return v * v * (3 - 2 * v); };
+  let envIsDay = true;
 
   function applyTOD(carPos) {
     const ang = (tod - 0.25) * Math.PI * 2;   // 0 at sunrise, PI/2 at noon
@@ -518,30 +554,39 @@ export async function buildOpenWorld(scene, renderer) {
     const horiz = Math.cos(ang);
     _sd.set(horiz * Math.sin(azi), Math.max(elev, 0.02), horiz * Math.cos(azi)).normalize();
 
-    const day = clamp01(elev * 3.0 + 0.12);   // ~0 at night, 1 in full day
+    // smooth day factor: gentle ramp through dawn/dusk instead of a hard step
+    const day = smooth(elev * 1.6 + 0.28);    // ~0 at night, 1 in full day
     const night = 1 - day;
+    // golden-hour weight peaks when the sun sits low but is still up
+    const golden = clamp01(1 - Math.abs(elev) * 4.5) * clamp01(elev * 12 + 0.4);
 
-    // sun light (fades below horizon)
-    sun.intensity = clamp01(elev * 2.6) * 2.1;
+    // sun light: fades below horizon, warms + dims toward the horizon
+    sun.intensity = smooth(elev * 2.2 + 0.02) * 2.1;
     sun.visible = elev > -0.02;
+    _sun.copy(sunLow).lerp(sunHigh, smooth(elev * 2.4));
+    sun.color.copy(_sun);
     const snap = 4;
     _t.set(Math.round(carPos.x / snap) * snap, 0, Math.round(carPos.z / snap) * snap);
     sun.position.copy(_t).addScaledVector(_sd, 300);
     sun.target.position.copy(_t);
 
-    // ambient + sky
-    hemi.intensity = 0.28 + day * 0.42;
+    // ambient + sky (sky tint warms during golden hour)
+    hemi.intensity = 0.26 + day * 0.44;
+    _sky.copy(skyDay).lerp(skyDusk, golden * 0.7);
+    hemi.color.copy(_sky);
     if (daySky.material.uniforms) daySky.material.uniforms.sunPosition.value.copy(_sd);
     nightMat.uniforms.uNight.value = night;   // stars/glow fade in at night
-    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.32 + day * 0.28;
-    if (scene.environment !== (day > 0.5 ? envDay : envNight)) {
-      scene.environment = day > 0.5 ? envDay : envNight;
-    }
+    if ('environmentIntensity' in scene) scene.environmentIntensity = 0.30 + day * 0.30;
+    // swap the baked IBL at the horizon crossing — the dimmest moment, so the
+    // pop between day/night env maps is invisible (was mid-golden-hour before)
+    const wantDay = elev > 0;
+    if (wantDay !== envIsDay) { scene.environment = wantDay ? envDay : envNight; envIsDay = wantDay; }
 
-    // fog + exposure. Daytime kept modest so the sky/car don't blow out.
-    _fog.copy(nightFog).lerp(dayFog, day);
+    // fog: cool blue by day, warm at the horizon during golden hour, deep at
+    // night. exposure lifts smoothly into the dark so night reads bright.
+    _fog.copy(nightFog).lerp(dayFog, day).lerp(duskFog, golden * 0.5);
     if (scene.fog) { scene.fog.color.copy(_fog); scene.fog.density = 0.00035 + night * 0.00028; }
-    if (renderer) renderer.toneMappingExposure = 0.5 + night * 0.5;
+    if (renderer) renderer.toneMappingExposure = 0.5 + smooth(night) * 0.5;
     nightFactor = night;                      // exposed so main can drive bloom
 
     // street lamps glow from dusk; pool lights follow nearest heads

@@ -68,17 +68,27 @@ export class GameAudio {
     if (this.master) this.master.gain.value = m ? 0 : 0.55;
   }
 
-  update(dt, { rpm = 0, throttle = 0, speed01 = 0, slide = 0, onKerb = false, onGrass = false, cockpit = false, footIdle = false }) {
+  update(dt, { rpm = 0, throttle = 0, speed01 = 0, slide = 0, onKerb = false, onGrass = false, cockpit = false, footIdle = false, footDist = 0 }) {
     if (!this.ctx || this.muted) return;
     const t = this.ctx.currentTime;
     const f = 68 + rpm * rpm * 490 + rpm * 160;
     this.oscA.frequency.setTargetAtTime(f, t, 0.03);
     this.oscB.frequency.setTargetAtTime(f * 1.5, t, 0.03);
     this.oscC.frequency.setTargetAtTime(f * 0.5, t, 0.03);
-    // on foot the car is parked in the distance -> a faint idle only
-    const vol = footIdle ? 0.02 : (0.05 + throttle * 0.115 + rpm * 0.05) * (cockpit ? 1.25 : 1);
-    this.engineGain.gain.setTargetAtTime(vol, t, footIdle ? 0.2 : 0.05);
-    this.engineLPF.frequency.setTargetAtTime(900 + rpm * 4200 + throttle * 800, t, 0.08);
+    // on foot the car idles in the distance: its hum falls off ~1/d and is
+    // fully inaudible past ~30 m, so walking away quiets it naturally. The
+    // low-pass also closes down so distance sounds muffled, not just softer.
+    let vol, lpf;
+    if (footIdle) {
+      const near = Math.max(0, 1 - footDist / 30);   // 1 at the car, 0 by 30 m
+      vol = 0.035 * near * near;
+      lpf = 260 + near * 500;
+    } else {
+      vol = (0.05 + throttle * 0.115 + rpm * 0.05) * (cockpit ? 1.25 : 1);
+      lpf = 900 + rpm * 4200 + throttle * 800;
+    }
+    this.engineGain.gain.setTargetAtTime(vol, t, footIdle ? 0.25 : 0.05);
+    this.engineLPF.frequency.setTargetAtTime(lpf, t, 0.08);
     this.wind.g.gain.setTargetAtTime(speed01 * speed01 * 0.30, t, 0.1);
     this.skid.g.gain.setTargetAtTime(Math.min(slide, 1) * 0.22, t, 0.05);
     this.skid.f.frequency.setTargetAtTime(650 + slide * 260, t, 0.05);

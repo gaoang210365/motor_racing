@@ -8,6 +8,18 @@ export default defineConfig({
     port: Number(process.env.PORT) || 5173,
     strictPort: false,
   },
+  build: {
+    // split three (+ its addons) into its own long-lived vendor chunk so app
+    // edits don't force users to re-download the ~600 KB engine every deploy
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/three')) return 'three';
+        },
+      },
+    },
+  },
   plugins: [
     {
       // dev helper: POST a data-URL to /__shot and it lands in tools/out/

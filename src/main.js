@@ -551,8 +551,10 @@ function tick(dt, render = true) {
       G.onfoot.group.visible = G.rig.footView !== 'first';
       G.rig.update(dt);
       G.env.update(dt, G.onfoot.pos);
-      // parked car idles quietly in the distance — fade the engine right down
-      audio.update(dt, { rpm: 0.12, throttle: 0, speed01: 0, slide: 0, footIdle: true });
+      // parked car idles quietly in the distance — its faint hum falls off with
+      // how far the driver has walked from the car (silent once well away)
+      const footDist = Math.hypot(G.onfoot.pos.x - p.pos.x, G.onfoot.pos.z - p.pos.z);
+      audio.update(dt, { rpm: 0.12, throttle: 0, speed01: 0, slide: 0, footIdle: true, footDist });
       hud.update(G);
     } else {
       G.accum = Math.min(G.accum + dt, FIXED * 8);
